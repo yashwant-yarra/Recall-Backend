@@ -79,7 +79,23 @@ uv run python eval/run.py http://localhost:8000
 
 It reports hit@1 and hit@3 for retrieval and the answer pass rate, per question type.
 
-<!-- TODO: paste the latest eval summary here -->
+### Latest eval (2026-10-31)
+
+Corpus: one 4-page PDF (14 chunks). Search returns the top 8 chunks; `gemini-3.5-flash-lite` answers.
+
+| Type | n | hit@1 | hit@3 | Answer |
+| --- | --- | --- | --- | --- |
+| keyword | 5 | 5/5 | 5/5 | 5/5 |
+| historical | 4 | 4/4 | 4/4 | 4/4 |
+| paraphrase | 4 | 2/4 | 2/4 | 4/4 |
+| computed | 3 | 2/3 | 3/3 | 3/3 |
+| unanswerable | 3 | 3/3 | 3/3 | 2/3 |
+| disambiguation | 1 | 1/1 | 1/1 | 1/1 |
+| **Total** | **20** | **16/20** | **18/20** | **19/20** |
+
+- **Retrieval is the same on every run.** Paraphrase is the weak spot (the right chunk ranks 5th and 6th): when a question shares few words with the text, full-text search adds little.
+- **Answers pass partly because the corpus is small.** 8 of 14 chunks reach the model, so answer accuracy here overstates what a larger corpus would give. hit@3 is the better retrieval measure.
+- **Unanswerable questions must start with a fixed sentence** ("I don't know based on your documents."), so grading is an exact check, not a phrase guess. The one miss (#20) has the right meaning but not the sentence.
 
 ## Roadmap
 

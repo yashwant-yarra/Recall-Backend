@@ -7,7 +7,7 @@ import urllib.request
 from collections import Counter
 
 API = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000"
-ABSTAIN = ("don't know", "do not know", "not specified", "does not specify", "doesn't specify", "not stated")
+ABSTAIN = ("i don't know based on your documents",)  # the exact refusal sentence in ask.py SYSTEM
 
 
 def search_pages(question: str) -> list[int]:
