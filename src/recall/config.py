@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     embed_model: str = "gemini-embedding-001"
     answer_model: str = "gemini-3.5-flash-lite"
     transcribe_model: str = "gemini-3.5-transcribe"
+    summary_model: str = "gemini-3.5-flash-lite"
     # A processing claim older than this is treated as abandoned (the worker crashed) and can be
     # reclaimed. Must exceed the worker's Cloud Run request timeout (default 300 s), so a live
     # request is always killed before its claim expires.
