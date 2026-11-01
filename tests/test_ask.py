@@ -74,3 +74,10 @@ def test_quick_answer_supports_overviews_and_keeps_source_refusal():
     assert "For an overview question" in ask.ANSWER_SYSTEM
     assert "I don't know based on your documents." in ask.ANSWER_SYSTEM
     assert "without adding a self-check question" in ask.ANSWER_SYSTEM
+
+
+def test_both_modes_require_document_relevance_and_allow_related_followups():
+    for prompt in (ask.ANSWER_SYSTEM, ask.EXPLAIN_SYSTEM):
+        assert "Only answer questions related to the subjects" in prompt
+        assert "requests for more detail beyond the document" in prompt
+        assert "do not answer it" in prompt
