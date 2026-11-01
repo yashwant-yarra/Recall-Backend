@@ -2,6 +2,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from uuid import UUID
+import json
 
 import google.auth
 from fastapi import FastAPI, Request
@@ -14,7 +15,8 @@ from .db import make_engine
 from .extract import extract_text
 from .chunking import chunk_pages
 from .embeddings import embed, make_genai_client
-
+from .transcribe import transcribe
+from .summarize import summarize
 
 # uvicorn only configures its own loggers; without this, INFO from this module is dropped.
 logging.basicConfig(level=logging.INFO)
@@ -74,12 +76,21 @@ async def handle_event(request: Request):
     # Any failure must land in 'failed', or the row stays stuck in 'processing'.
     try:
         data = await asyncio.to_thread(request.app.state.bucket.blob(row.gcs_path).download_as_bytes)
-        pages = await asyncio.to_thread(extract_text, data, row.mime_type)
-        chunks = chunk_pages(pages)
+        summary = None
+        if row.kind == "audio":
+            transcript = await transcribe(request.app.state.genai, data, row.mime_type)
+            if not transcript:
+                raise ValueError("No speech in audio")
+            summary = await summarize(request.app.state.genai, transcript)
+            # Audio has no pages: keep the text of each chunk, set page to None.
+            chunks = [(None, content) for _, content in chunk_pages([transcript])]
+        else:
+            pages = await asyncio.to_thread(extract_text, data, row.mime_type)
+            chunks = chunk_pages(pages)
         if not chunks:
             raise ValueError("No extractable text")
         vectors = await embed(request.app.state.genai, [content for _, content in chunks])
-        async with engine.begin() as conn:  # chunks + 'ready' commit together or not at all
+        async with engine.begin() as conn:  # chunks + voice note + 'ready' commit together or not at all
             await conn.execute(
                 text("INSERT INTO chunks (file_id, user_id, chunk_no, page, content, embedding) "
                      "VALUES (:file_id, :user_id, :chunk_no, :page, :content, CAST(:embedding AS halfvec))"),
@@ -87,9 +98,17 @@ async def handle_event(request: Request):
                   "content": content, "embedding": str(vec)}
                  for i, ((page, content), vec) in enumerate(zip(chunks, vectors))],
             )
+            if summary is not None:
+                await conn.execute(
+                    text("INSERT INTO voice_notes (file_id, summary, action_items, topics) "
+                         "VALUES (:file_id, :summary, CAST(:action_items AS jsonb), CAST(:topics AS jsonb))"),
+                    {"file_id": file_id, "summary": summary.summary,
+                     "action_items": json.dumps(summary.action_items),
+                     "topics": json.dumps(summary.topics)},
+                )
             await conn.execute(text("UPDATE files SET status = 'ready', error = NULL WHERE id = :id"),
                                {"id": file_id})
-        logger.info("Indexed %s: %d pages, %d chunks", file_id, len(pages), len(chunks))
+        logger.info("Indexed %s (%s): %d chunks", file_id, row.kind, len(chunks))
         status = "ready"
     except Exception as e:
         logger.exception("Processing failed for %s", file_id)
