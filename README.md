@@ -109,6 +109,33 @@ Credentials are mounted at run time, never baked into the image.
 - Try the agent from the terminal: `uv run python -m recall.agent <user_id> "your goal"` (asks y/N for writes)
 - Call a tool directly: `uv run python -m recall.tools list_voice_notes <user_id> '{"limit": 5}'`
 
+## Deployment
+
+Both services run on Cloud Run in `asia-southeast1`, next to the Neon database, from **one image** tagged with the git commit (never `latest`), so every revision maps to exact code.
+
+| Service | Entry point | Access | Runs as | Current (2026-11-01) |
+| --- | --- | --- | --- | --- |
+| `recall-api` | `recall.main:app` | public; Firebase token checked in code | own service account: create objects in the bucket, read its secrets, call Vertex AI | revision `00021`, image `92b623f` |
+| `recall-worker` | `recall.worker:app` | private; only Eventarc (as the worker's service account) can call it | own service account: read objects, call Vertex AI | revision `00008`, image `86c66e3` |
+
+The worker image is older because none of the later commits (billing, limits) changed worker code; the API is redeployed alone in that case.
+
+**Configuration.** Plain settings are env vars (`GCS_BUCKET`, `GOOGLE_CLOUD_PROJECT`, `RAZORPAY_KEY_ID`, `RAZORPAY_PLAN_ID`, any limit overrides like `DAILY_QUESTIONS`). Secrets come from Secret Manager, one grant per secret: `DATABASE_URL`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`. Nothing secret is in the image or the repo.
+
+**Deploying a change**
+
+1. Commit first, so the image tag matches the code.
+2. If there's a new migration, apply it **before** deploying (`uv run python -m alembic upgrade head`); migrations only add, so the running revision keeps working.
+3. Build once, then deploy whichever services changed:
+
+```powershell
+$sha = git rev-parse --short HEAD
+gcloud builds submit --tag <region>-docker.pkg.dev/<project>/recall/recall-api:$sha --region=<region> .
+gcloud run deploy recall-api --image <region>-docker.pkg.dev/<project>/recall/recall-api:$sha --region <region>
+```
+
+A deploy that only changes `--image` keeps every env var, secret and setting from the previous revision. If a new revision fails to start (bad config, a secret it can't read), Cloud Run keeps serving the old one.
+
 ## Tests and eval
 
 ```powershell
