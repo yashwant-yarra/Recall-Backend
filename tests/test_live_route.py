@@ -32,6 +32,7 @@ def test_live_connection_authenticates_and_starts_session(monkeypatch):
     app.state.genai_live = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=connect)))
     monkeypatch.setattr(live, "user_from_token", AsyncMock(return_value="student"))
     monkeypatch.setattr(live, "_reserve", AsyncMock(return_value=(30, 123)))
+    monkeypatch.setattr(live, "is_pro", AsyncMock(return_value=True))  # Talk is a Pro feature
     with TestClient(app) as client:
         with client.websocket_connect("/api/v1/live") as socket:
             socket.send_json({"type": "start", "token": "test", "file_id": None, "language": None})
@@ -49,3 +50,18 @@ def test_live_connection_rejects_invalid_auth(monkeypatch):
         with client.websocket_connect("/api/v1/live") as socket:
             socket.send_json({"type": "start", "token": "invalid"})
             assert socket.receive_json() == {"type": "error", "message": "Invalid token"}
+
+
+def test_live_connection_refuses_free_users_before_reserving_time(monkeypatch):
+    app = FastAPI()
+    app.include_router(live.router, prefix="/api/v1")
+    app.state.engine = object()
+    reserve = AsyncMock()
+    monkeypatch.setattr(live, "user_from_token", AsyncMock(return_value="student"))
+    monkeypatch.setattr(live, "is_pro", AsyncMock(return_value=False))
+    monkeypatch.setattr(live, "_reserve", reserve)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/live") as socket:
+            socket.send_json({"type": "start", "token": "t", "file_id": None, "language": None})
+            assert socket.receive_json() == {"type": "error", "message": "Talk is part of Pro"}
+    reserve.assert_not_awaited()  # no live minutes were reserved for a Free user

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from recall import auth
-from recall.db import PLAN_LIMIT, UTC_DAY_START
+from recall.db import PLAN_LIMIT, UTC_DAY_START, is_pro
 from recall.extract import office_to_pdf
 from recall.storage import delete_object, delete_prefix, sign_download_url, sign_upload_url
 
@@ -65,6 +65,15 @@ async def create_file(body: CreateFileRequest, request: Request, user_id: str = 
     if body.mime_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported mime type: {body.mime_type}")
     kind, ext = ALLOWED_TYPES[body.mime_type]
+    if not await is_pro(request.app.state.engine, user_id):
+        free_mb = settings.free_max_upload_size // (1024 * 1024)
+        if body.size_bytes > settings.free_max_upload_size:
+            raise HTTPException(status_code=400, detail=f"Free plan files can be up to {free_mb} MB. Upgrade to Pro for up to {settings.max_upload_size // (1024 * 1024)} MB.")
+        async with request.app.state.engine.connect() as conn:
+            kept = (await conn.execute(text("SELECT count(*) FROM files WHERE user_id = :uid"), {"uid": user_id})).scalar_one()
+        # ponytail: count-then-insert, so two simultaneous uploads at the cap can both pass by one.
+        if kept >= settings.free_max_files:
+            raise HTTPException(status_code=403, detail=f"The Free plan keeps up to {settings.free_max_files} files. Delete one or upgrade to Pro.")
     file_id = uuid4()
     folder = "audio" if kind == "audio" else "docs"
     gcs_path = f"users/{user_id}/{folder}/{file_id}.{ext}"

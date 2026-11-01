@@ -8,6 +8,7 @@ from sqlalchemy import text
 from recall import auth
 from recall.agent import create_run, resolve_approval, run_agent
 from recall.ask import sse
+from recall.db import require_pro
 
 router = APIRouter()
 
@@ -32,6 +33,7 @@ def stream(events):
 async def start_run(body: RunRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)):
     # Anything that should fail with a real HTTP status must happen before the stream starts:
     # once StreamingResponse begins, the 200 and headers are already sent.
+    await require_pro(request.app.state.engine, user_id, "The Agent")
     run_id = await create_run(request.app.state.engine, user_id, body.goal)
     if run_id is None:
         raise HTTPException(status_code=429, detail="Daily agent run limit reached for your plan")

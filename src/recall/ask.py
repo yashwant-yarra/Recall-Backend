@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from recall import auth
 from recall.config import settings
-from recall.db import PLAN_LIMIT, UTC_DAY_START
+from recall.db import PLAN_LIMIT, UTC_DAY_START, require_pro
 from recall.search import hybrid_search
 
 logger = logging.getLogger(__name__)
@@ -134,6 +134,8 @@ def source_label(hit: dict) -> str:
 @router.post("/ask")
 async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)):
     engine = request.app.state.engine
+    if body.web_search and body.mode == "explain":  # Pro only; refused before anything is saved
+        await require_pro(engine, user_id, "Web search")
     async with engine.begin() as conn:
         # Each question is a Gemini call, so cap them per user per UTC day. Checked before the stream
         # starts, so the client gets a real 429. ponytail: count-then-insert, so two simultaneous

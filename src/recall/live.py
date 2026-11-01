@@ -26,7 +26,7 @@ from sqlalchemy import text
 from recall.ask import Language, language_instruction, source_label
 from recall.auth import user_from_token
 from recall.config import settings
-from recall.db import UTC_DAY_START
+from recall.db import UTC_DAY_START, is_pro
 from recall.search import hybrid_search
 
 logger = logging.getLogger(__name__)
@@ -134,6 +134,9 @@ async def live(ws: WebSocket):
             return await fail("File not found")
         doc_name = doc.display_name
     language = start.get("language") if start.get("language") in LANGUAGES else None
+
+    if not await is_pro(engine, user_id):  # a websocket can't send an HTTP 403, so say it in the protocol
+        return await fail("Talk is part of Pro")
 
     allowed, usage_id = await _reserve(engine, user_id)
     if not usage_id:

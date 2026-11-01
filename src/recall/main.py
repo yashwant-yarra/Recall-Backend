@@ -68,8 +68,26 @@ async def read_health_db(request: Request):
         raise HTTPException(status_code=503, detail="Database connection failed") from e
 
 
+def plan_limits() -> list[dict]:
+    """What each plan includes, for the UI's plan table. A free value of 0 means 'Pro only';
+    a pro value of None means unlimited. Read from settings so the screen can't drift from the real limits."""
+    s, mb = settings, 1024 * 1024
+    return [
+        {"key": "questions", "label": "Questions per day", "free": s.daily_questions, "pro": s.pro_daily_questions},
+        {"key": "uploads", "label": "Uploads per day", "free": s.daily_uploads, "pro": s.pro_daily_uploads},
+        {"key": "quizzes", "label": "Quizzes per day", "free": s.daily_quizzes, "pro": s.pro_daily_quizzes},
+        {"key": "voice_inputs", "label": "Spoken questions per day", "free": s.daily_voice_inputs, "pro": s.pro_daily_voice_inputs},
+        {"key": "read_aloud", "label": "Read-aloud requests per day", "free": s.daily_tts_requests, "pro": s.pro_daily_tts_requests},
+        {"key": "live_minutes", "label": "Talk minutes per day", "free": s.daily_live_seconds // 60, "pro": s.pro_daily_live_seconds // 60},
+        {"key": "agent_runs", "label": "Agent runs per day", "free": s.agent_daily_runs, "pro": s.pro_agent_daily_runs},
+        {"key": "web_searches", "label": "Web search answers per day", "free": s.daily_web_searches, "pro": s.pro_daily_web_searches},
+        {"key": "max_files", "label": "Files kept at once", "free": s.free_max_files, "pro": None},
+        {"key": "max_file_mb", "label": "Largest file (MB)", "free": s.free_max_upload_size // mb, "pro": s.max_upload_size // mb},
+    ]
+
+
 @app.get("/me")
 async def read_current_user(request: Request, user_id: str = Depends(auth.get_current_user_id)):
     async with request.app.state.engine.connect() as conn:
         plan = (await conn.execute(text("SELECT plan FROM users WHERE id = :uid"), {"uid": user_id})).scalar_one()
-    return {"user_id": user_id, "plan": plan}
+    return {"user_id": user_id, "plan": plan, "limits": plan_limits()}
