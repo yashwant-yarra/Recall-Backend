@@ -8,7 +8,6 @@ from sqlalchemy import text
 from recall import auth
 from recall.agent import create_run, resolve_approval, run_agent
 from recall.ask import sse
-from recall.config import settings
 
 router = APIRouter()
 
@@ -35,7 +34,7 @@ async def start_run(body: RunRequest, request: Request, user_id: str = Depends(a
     # once StreamingResponse begins, the 200 and headers are already sent.
     run_id = await create_run(request.app.state.engine, user_id, body.goal)
     if run_id is None:
-        raise HTTPException(status_code=429, detail=f"Daily limit of {settings.agent_daily_runs} agent runs reached")
+        raise HTTPException(status_code=429, detail="Daily agent run limit reached for your plan")
 
     async def events():
         yield {"type": "run", "run_id": str(run_id)}

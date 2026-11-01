@@ -24,6 +24,17 @@ class Settings(BaseSettings):
     agent_daily_runs: int = 20  # runs per user per UTC day
     daily_uploads: int = 50  # POST /files per user per UTC day
     daily_questions: int = 200  # POST /ask per user per UTC day (each one is a Gemini call)
+    # Pro plan limits (same units as the free ones above).
+    pro_daily_uploads: int = 500
+    pro_daily_questions: int = 2000
+    pro_agent_daily_runs: int = 200
+    # Razorpay billing. Unset keys = billing switched off (the billing endpoints return 503).
+    razorpay_key_id: str | None = None  # rzp_test_... (identifies the account; not secret)
+    razorpay_key_secret: str | None = None  # Secret Manager in production
+    razorpay_webhook_secret: str | None = None  # chosen when creating the webhook; Secret Manager
+    razorpay_plan_id: str | None = None  # plan_... of the monthly Pro plan
+    razorpay_total_count: int = 12  # billing cycles per subscription (Razorpay requires a number)
+    razorpay_api_url: str = "https://api.razorpay.com/v1"
     # A processing claim older than this is treated as abandoned (the worker crashed) and can be
     # reclaimed. Must exceed the worker's Cloud Run request timeout (default 300 s), so a live
     # request is always killed before its claim expires.

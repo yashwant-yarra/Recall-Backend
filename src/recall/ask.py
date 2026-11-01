@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from recall import auth
 from recall.config import settings
-from recall.db import UTC_DAY_START
+from recall.db import PLAN_LIMIT, UTC_DAY_START
 from recall.search import hybrid_search
 from uuid import UUID
 from fastapi import HTTPException
@@ -49,12 +49,12 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
         # Each question is a Gemini call, so cap them per user per UTC day. Checked before the stream
         # starts, so the client gets a real 429. ponytail: count-then-insert, so two simultaneous
         # questions at the limit can both pass; fine for a cost cap, not for exact billing.
-        asked = (await conn.execute(text(
-            "SELECT count(*) FROM messages m JOIN chats c ON c.id = m.chat_id "
-            f"WHERE c.user_id = :uid AND m.role = 'user' AND m.created_at >= {UTC_DAY_START}"
-        ), {"uid": user_id})).scalar_one()
-        if asked >= settings.daily_questions:
-            raise HTTPException(status_code=429, detail=f"Daily limit of {settings.daily_questions} questions reached")
+        over = (await conn.execute(text(
+            "SELECT (SELECT count(*) FROM messages m JOIN chats c ON c.id = m.chat_id "
+            f"WHERE c.user_id = :uid AND m.role = 'user' AND m.created_at >= {UTC_DAY_START}) >= {PLAN_LIMIT}"
+        ), {"uid": user_id, "free": settings.daily_questions, "pro": settings.pro_daily_questions})).scalar_one()
+        if over:
+            raise HTTPException(status_code=429, detail="Daily question limit reached for your plan")
         if body.chat_id is None:
             chat_id = (await conn.execute(
                 text("INSERT INTO chats (user_id, title) VALUES (:uid, :title) RETURNING id"),

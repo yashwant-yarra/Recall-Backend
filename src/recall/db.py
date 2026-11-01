@@ -5,6 +5,10 @@ from .config import settings
 # on when a day starts regardless of the server's or the session's time zone.
 UTC_DAY_START = "date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
 
+# SQL for a user's daily limit: the :pro value if their plan is 'pro', else :free.
+# Every query that uses it binds :uid, :free and :pro.
+PLAN_LIMIT = "(CASE WHEN (SELECT plan FROM users WHERE id = :uid) = 'pro' THEN :pro ELSE :free END)"
+
 def make_engine() -> AsyncEngine:
     # prepare_threshold=None: Neon's pooler (PgBouncer, transaction mode) breaks server-side prepared statements.
     connect_args = {"prepare_threshold": None}

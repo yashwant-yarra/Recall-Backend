@@ -10,7 +10,7 @@ from google.genai import types
 from sqlalchemy import text
 
 from recall.config import settings
-from recall.db import UTC_DAY_START, make_engine
+from recall.db import PLAN_LIMIT, UTC_DAY_START, make_engine
 from recall.embeddings import make_genai_client
 from recall.tools import DECLARATIONS, TOOLS
 
@@ -51,7 +51,7 @@ def build_contents(goal: str, steps: list[dict]) -> list[types.Content]:
 
 
 async def create_run(engine, user_id: str, goal: str) -> UUID | None:
-    """Insert a run, unless the user already started agent_daily_runs today (UTC). None = over quota.
+    """Insert a run, unless the user hit their plan's daily run limit (UTC day). None = over quota.
 
     The count and the insert are one statement, so there's no gap between checking and inserting.
     ponytail: two truly simultaneous requests can still both pass (each counts before the other
@@ -62,9 +62,10 @@ async def create_run(engine, user_id: str, goal: str) -> UUID | None:
             "INSERT INTO agent_runs (user_id, goal) "
             "SELECT :uid, :goal WHERE ("
             f"  SELECT count(*) FROM agent_runs WHERE user_id = :uid AND created_at >= {UTC_DAY_START}"
-            ") < :limit "
+            f") < {PLAN_LIMIT} "
             "RETURNING id"
-        ), {"uid": user_id, "goal": goal, "limit": settings.agent_daily_runs})).scalar_one_or_none()
+        ), {"uid": user_id, "goal": goal, "free": settings.agent_daily_runs,
+            "pro": settings.pro_agent_daily_runs})).scalar_one_or_none()
 
 
 async def _load(conn, run_id: UUID, user_id: str):
@@ -199,7 +200,7 @@ async def main(user_id: str, goal: str) -> None:
     app = SimpleNamespace(state=SimpleNamespace(engine=make_engine(), genai=make_genai_client()))
     run_id = await create_run(app.state.engine, user_id, goal)
     if run_id is None:
-        print(f"Daily limit of {settings.agent_daily_runs} runs reached")
+        print("Daily agent run limit reached for this plan")
         return
     print("run", run_id)
     while True:

@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError
 
 from .config import settings
 from recall.db import make_engine
-from . import auth, files, search, ask, agent_api
+from . import auth, files, search, ask, agent_api, billing
 from .embeddings import make_genai_client
 
 @asynccontextmanager
@@ -29,6 +29,7 @@ app.include_router(files.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(ask.router, prefix="/api/v1")
 app.include_router(agent_api.router, prefix="/api/v1")
+app.include_router(billing.router, prefix="/api/v1")
 
 logger = logging.getLogger(__name__)
 
@@ -50,5 +51,7 @@ async def read_health_db(request: Request):
 
 
 @app.get("/me")
-def read_current_user(user_id: str = Depends(auth.get_current_user_id)):
-    return {"user_id": user_id}
+async def read_current_user(request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    async with request.app.state.engine.connect() as conn:
+        plan = (await conn.execute(text("SELECT plan FROM users WHERE id = :uid"), {"uid": user_id})).scalar_one()
+    return {"user_id": user_id, "plan": plan}
