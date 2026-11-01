@@ -10,7 +10,7 @@ from google.genai import types
 from sqlalchemy import text
 
 from recall.config import settings
-from recall.db import make_engine
+from recall.db import UTC_DAY_START, make_engine
 from recall.embeddings import make_genai_client
 from recall.tools import DECLARATIONS, TOOLS
 
@@ -61,8 +61,7 @@ async def create_run(engine, user_id: str, goal: str) -> UUID | None:
         return (await conn.execute(text(
             "INSERT INTO agent_runs (user_id, goal) "
             "SELECT :uid, :goal WHERE ("
-            "  SELECT count(*) FROM agent_runs WHERE user_id = :uid "
-            "  AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
+            f"  SELECT count(*) FROM agent_runs WHERE user_id = :uid AND created_at >= {UTC_DAY_START}"
             ") < :limit "
             "RETURNING id"
         ), {"uid": user_id, "goal": goal, "limit": settings.agent_daily_runs})).scalar_one_or_none()

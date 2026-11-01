@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     agent_model: str = "gemini-3.5-flash"  # multi-step tool use benefits from the larger model
     agent_max_steps: int = 8  # tool calls per run before it is stopped
     agent_daily_runs: int = 20  # runs per user per UTC day
+    daily_uploads: int = 50  # POST /files per user per UTC day
+    daily_questions: int = 200  # POST /ask per user per UTC day (each one is a Gemini call)
     # A processing claim older than this is treated as abandoned (the worker crashed) and can be
     # reclaimed. Must exceed the worker's Cloud Run request timeout (default 300 s), so a live
     # request is always killed before its claim expires.

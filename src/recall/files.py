@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from recall import auth
+from recall.db import UTC_DAY_START
 from recall.storage import sign_upload_url
 
 from .config import settings
@@ -45,10 +46,17 @@ async def create_file(body: CreateFileRequest, request: Request, user_id: str = 
     folder = "audio" if kind == "audio" else "docs"
     gcs_path = f"users/{user_id}/{folder}/{file_id}.{ext}"
     async with request.app.state.engine.begin() as conn:
-        await conn.execute(
-            text("INSERT INTO files (id, user_id, kind, gcs_path, mime_type, size_bytes) VALUES (:id, :user_id, :kind, :gcs_path, :mime_type, :size_bytes)"),
-            {"id": str(file_id), "user_id": user_id, "kind": kind, "gcs_path": gcs_path, "mime_type": body.mime_type, "size_bytes": body.size_bytes}
-        )
+        # Insert only while the user is under today's upload limit (count + insert in one statement).
+        inserted = (await conn.execute(
+            text("INSERT INTO files (id, user_id, kind, gcs_path, mime_type, size_bytes) "
+                 "SELECT :id, :user_id, :kind, :gcs_path, :mime_type, :size_bytes WHERE ("
+                 f"  SELECT count(*) FROM files WHERE user_id = :user_id AND created_at >= {UTC_DAY_START}"
+                 ") < :limit RETURNING id"),
+            {"id": str(file_id), "user_id": user_id, "kind": kind, "gcs_path": gcs_path, "mime_type": body.mime_type,
+             "size_bytes": body.size_bytes, "limit": settings.daily_uploads}
+        )).scalar_one_or_none()
+    if inserted is None:
+        raise HTTPException(status_code=429, detail=f"Daily limit of {settings.daily_uploads} uploads reached")
     url, headers = await asyncio.to_thread(
         sign_upload_url,
         request.app.state.gcs_bucket,
