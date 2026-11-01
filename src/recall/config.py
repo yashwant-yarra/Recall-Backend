@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     pro_daily_quizzes: int = 30
     quiz_model: str = "gemini-3.5-flash"  # writing good questions and grading answers needs the larger model
     ocr_model: str = "gemini-3.5-flash"  # reads scanned PDF pages when they have no text layer
+    # Voice: questions spoken into the mic, and answers read aloud (counted per request).
+    daily_voice_inputs: int = 30
+    pro_daily_voice_inputs: int = 300
+    daily_tts_requests: int = 150  # one request per piece of an answer (~a sentence or two)
+    pro_daily_tts_requests: int = 1500
+    tts_model: str = "gemini-2.5-flash-tts"
+    tts_voice: str = "Kore"
+    max_voice_input_bytes: int = 2 * 1024 * 1024  # ~2 minutes of compressed speech
+    max_tts_chars: int = 600
     # Razorpay billing. Unset keys = billing switched off (the billing endpoints return 503).
     razorpay_key_id: str | None = None  # rzp_test_... (identifies the account; not secret)
     razorpay_key_secret: str | None = None  # Secret Manager in production
