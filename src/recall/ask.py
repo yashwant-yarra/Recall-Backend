@@ -45,9 +45,11 @@ EXPLAIN_SYSTEM = (
     "Explain step by step in simple language, define any terms the student may not know, and give a short "
     "example or analogy when it helps. Base the explanation on the numbered sources and cite them with [n]. "
     "If you add background that is not in the sources, put it in a separate paragraph that starts with "
-    "'Beyond your document:'. If the sources don't cover the question at all, start with exactly: "
-    "I don't know based on your documents. and then you may give a brief general explanation under "
-    "'Beyond your document:'. End with one short question the student can use to check their understanding. "
+    "'Beyond your document:'. When the student asks for related details beyond the document, provide that "
+    "background directly under this label; do not begin with 'I don't know based on your documents.' "
+    "If the student asks what the document says about a specific fact and the sources do not say, start with "
+    "exactly: I don't know based on your documents. You may then give relevant background under the label. "
+    "End with one short question the student can use to check their understanding. "
     + GUARD
 )
 

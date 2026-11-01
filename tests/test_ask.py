@@ -81,3 +81,9 @@ def test_both_modes_require_document_relevance_and_allow_related_followups():
         assert "Only answer questions related to the subjects" in prompt
         assert "requests for more detail beyond the document" in prompt
         assert "do not answer it" in prompt
+
+
+def test_explain_distinguishes_requested_background_from_missing_document_facts():
+    assert "When the student asks for related details beyond the document" in ask.EXPLAIN_SYSTEM
+    assert "do not begin with 'I don't know based on your documents.'" in ask.EXPLAIN_SYSTEM
+    assert "If the student asks what the document says about a specific fact" in ask.EXPLAIN_SYSTEM
