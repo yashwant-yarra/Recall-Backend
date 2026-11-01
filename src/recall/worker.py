@@ -52,7 +52,7 @@ async def handle_event(request: Request):
                 "UPDATE files SET status = 'processing', claimed_at = now(), attempts = attempts + 1 "
                 "WHERE id = :id AND (status = 'pending' OR (status = 'processing' "
                 "AND claimed_at < now() - make_interval(secs => :lease))) "
-                "RETURNING gcs_path, mime_type, user_id, attempts"
+                "RETURNING gcs_path, mime_type, user_id, attempts, kind"
             ),
             {"id": file_id, "lease": settings.claim_lease_seconds},
         )
@@ -114,7 +114,7 @@ def unclaimed_response(status: str | None) -> tuple[int, dict]:
 
 def file_id_from_object_name(name: str) -> UUID | None:
     parts = name.split("/")
-    if len(parts) != 4 or parts[0] != "users" or parts[2] != "docs":
+    if len(parts) != 4 or parts[0] != "users" or parts[2] not in ("docs","audio"):
         return None
     stem = parts[3].rsplit(".", 1)[0]
     try:

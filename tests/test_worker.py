@@ -4,9 +4,13 @@ from recall.worker import file_id_from_object_name, unclaimed_response
 def test_doc_path():
     u = uuid4()
     assert file_id_from_object_name(f"users/user1/docs/{u}.txt") == u
-def test_audio_path_ignored():
+def test_audio_path():
     u = uuid4()
-    assert file_id_from_object_name(f"users/user1/audio/{u}.mp3") is None
+    assert file_id_from_object_name(f"users/user1/audio/{u}.mp3") == u
+def test_unknown_folder_ignored():
+    # Only docs/ and audio/ are processed; any other folder must still be ignored.
+    u = uuid4()
+    assert file_id_from_object_name(f"users/user1/images/{u}.png") is None
 def test_wrong_shape_ignored():
     assert file_id_from_object_name("derived/abc/text.txt") is None
 def test_bad_uuid_ignored():
