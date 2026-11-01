@@ -9,6 +9,7 @@ import re
 import wave
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from google.genai import types
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -92,3 +93,45 @@ async def speak(body: SpeakRequest, request: Request, user_id: str = Depends(aut
     # The text decides the language: Gemini TTS speaks Hindi text in Hindi, Tamil in Tamil, and so on.
     wav = pcm_to_wav(audio.data, sample_rate(audio.mime_type))
     return Response(content=wav, media_type="audio/wav", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.post("/speech/tts/stream")
+async def speak_stream(body: SpeakRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    await meter(request, user_id, "tts", settings.daily_tts_requests, settings.pro_daily_tts_requests)
+    stream = await request.app.state.genai.aio.models.generate_content_stream(
+        model=settings.tts_model, contents=body.text,
+        config=types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=settings.tts_voice))),
+        ),
+    )
+
+    async def chunks():
+        async for response in stream:
+            for candidate in response.candidates or []:
+                for part in candidate.content.parts if candidate.content and candidate.content.parts else []:
+                    if part.inline_data and part.inline_data.data:
+                        if sample_rate(part.inline_data.mime_type) != 24000:
+                            raise ValueError("Unexpected speech sample rate")
+                        yield part.inline_data.data
+
+    audio = chunks()
+    first = await anext(audio, None)
+    if not first:
+        await audio.aclose()
+        if hasattr(stream, "aclose"):
+            await stream.aclose()
+        raise HTTPException(status_code=502, detail="Could not generate speech")
+
+    async def output():
+        try:
+            yield first
+            async for chunk in audio:
+                yield chunk
+        finally:
+            await audio.aclose()
+            if hasattr(stream, "aclose"):
+                await stream.aclose()
+
+    return StreamingResponse(output(), media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
