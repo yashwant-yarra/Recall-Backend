@@ -88,7 +88,7 @@ async def _reserve(engine, user_id: str) -> tuple[int, int | None]:
     at once can't both spend the full allowance. Returns (allowed_seconds, usage_row_id)."""
     async with engine.begin() as conn:
         row = (await conn.execute(text(
-            "SELECT CASE WHEN u.plan = 'pro' THEN :pro ELSE :free END AS lim, "
+            "SELECT CASE WHEN (u.plan = 'pro' OR u.trial_ends_at > now()) THEN :pro ELSE :free END AS lim, "
             f"COALESCE((SELECT sum(seconds) FROM usage_events WHERE user_id = :uid AND kind = 'live' "
             f"AND created_at >= {UTC_DAY_START}), 0) AS used FROM users u WHERE u.id = :uid FOR UPDATE"
         ), {"uid": user_id, "free": settings.daily_live_seconds, "pro": settings.pro_daily_live_seconds})).one()

@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     dev_user_id: str | None = None
     max_upload_size: int = 25 * 1024 * 1024  # 25 MB (Pro, and the absolute ceiling)
     free_max_upload_size: int = 5 * 1024 * 1024  # Free: 5 MB per file
-    free_max_files: int = 5  # Free: documents and voice notes kept at once (new uploads only; nothing is deleted)
+    trial_days: int = 7  # one free trial of Pro per account, opt-in, no card
+    free_max_files: int = 5 # Free: documents and voice notes kept at once (new uploads only; nothing is deleted)
     upload_url_ttl_seconds: int = 15 * 60  # 15 minutes
     download_url_ttl_seconds: int = 5 * 60  # preview links: short-lived, re-requested on each open
     google_cloud_project: str

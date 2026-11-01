@@ -38,8 +38,8 @@ class FakeEngine:
 
             async def execute(self, statement, params=None):
                 sql = str(statement)
-                if "SELECT plan" in sql:
-                    return FakeResult(engine.plan)
+                if "FROM users" in sql:
+                    return FakeResult(engine.plan == "pro")  # the access query: paid plan or running trial
                 if "count(*)" in sql:
                     return FakeResult(engine.kept)
                 raise AssertionError(f"unexpected query: {sql}")
@@ -85,3 +85,18 @@ def test_free_upload_over_5mb_is_refused():
 def test_free_upload_at_the_file_cap_is_refused():
     r = post_file(upload_client(FakeEngine("free", kept=settings.free_max_files)), 1000)
     assert r.status_code == 403 and "Delete one or upgrade" in r.json()["detail"]
+
+
+def test_trial_state():
+    from datetime import datetime, timedelta, timezone
+
+    from recall.db import trial_state
+
+    now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    never = trial_state("free", None, now)
+    assert never == {"active": False, "ends_at": None, "available": True}
+    running = trial_state("free", now + timedelta(days=3), now)
+    assert running["active"] and not running["available"]  # one trial per account, even while it runs
+    over = trial_state("free", now - timedelta(seconds=1), now)
+    assert not over["active"] and not over["available"]  # used up; can't start another
+    assert not trial_state("pro", None, now)["available"]  # paying users don't need one

@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import google.auth
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -9,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from .config import settings
-from recall.db import make_engine
+from recall.db import make_engine, trial_state
 from . import auth, files, search, ask, agent_api, billing, quiz, speech, live, tasks_api
 from google import genai
 
@@ -89,5 +90,7 @@ def plan_limits() -> list[dict]:
 @app.get("/me")
 async def read_current_user(request: Request, user_id: str = Depends(auth.get_current_user_id)):
     async with request.app.state.engine.connect() as conn:
-        plan = (await conn.execute(text("SELECT plan FROM users WHERE id = :uid"), {"uid": user_id})).scalar_one()
-    return {"user_id": user_id, "plan": plan, "limits": plan_limits()}
+        row = (await conn.execute(text("SELECT plan, trial_ends_at FROM users WHERE id = :uid"), {"uid": user_id})).one()
+    # plan is what the user pays for; trial says whether Pro access is running without payment.
+    return {"user_id": user_id, "plan": row.plan, "trial": trial_state(row.plan, row.trial_ends_at, datetime.now(timezone.utc)),
+            "limits": plan_limits()}

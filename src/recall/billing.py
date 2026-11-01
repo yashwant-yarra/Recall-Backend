@@ -75,6 +75,21 @@ async def checkout(request: Request, user_id: str = Depends(auth.get_current_use
     return {"subscription_id": sub["id"], "url": sub["short_url"]}
 
 
+@router.post("/billing/trial")
+async def start_trial(request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """Start the account's one free trial of Pro. Works without Razorpay (no card), so no keys needed.
+    One statement checks and sets: only a free account that never had a trial matches, so a double click
+    or a second attempt matches nothing."""
+    async with request.app.state.engine.begin() as conn:
+        ends_at = (await conn.execute(text(
+            "UPDATE users SET trial_ends_at = now() + make_interval(days => :days) "
+            "WHERE id = :uid AND plan <> 'pro' AND trial_ends_at IS NULL RETURNING trial_ends_at"
+        ), {"uid": user_id, "days": settings.trial_days})).scalar_one_or_none()
+    if ends_at is None:
+        raise HTTPException(status_code=409, detail="The free trial was already used on this account")
+    return {"ends_at": ends_at.isoformat()}
+
+
 @router.post("/billing/cancel")
 async def cancel(request: Request, user_id: str = Depends(auth.get_current_user_id)):
     """Stop Pro from renewing: the user keeps Pro until the month they paid for ends. users.plan is NOT
