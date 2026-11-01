@@ -10,6 +10,12 @@ from recall.extract import OFFICE_TYPES, extract_text
 pytestmark = pytest.mark.skipif(not shutil.which("libreoffice"), reason="LibreOffice is not installed")
 
 
+@pytest.mark.parametrize("font,replacement", [("Calibri", "Carlito"), ("Cambria", "Caladea")])
+def test_office_font_substitution(font, replacement):
+    result = subprocess.run(["fc-match", font], check=True, capture_output=True, text=True, timeout=10)
+    assert replacement in result.stdout
+
+
 @pytest.mark.parametrize("mime,extension", OFFICE_TYPES.items())
 def test_extract_real_office_files(tmp_path, mime, extension):
     if extension == "doc":

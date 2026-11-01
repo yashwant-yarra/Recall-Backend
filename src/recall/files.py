@@ -18,6 +18,7 @@ from .config import settings
 logger = logging.getLogger(__name__)
 # LibreOffice is memory-heavy; allow one preview conversion per API instance.
 _preview_conversion = asyncio.Semaphore(1)
+PREVIEW_SUFFIX = ".preview-v2.pdf"  # invalidate previews rendered before Office-compatible fonts were installed
 
 # Allow-list: mime type -> (kind, extension). Anything not listed is rejected.
 ALLOWED_TYPES = {
@@ -127,7 +128,7 @@ async def _owned_file(request: Request, user_id: str, file_id: UUID):
 
 def presentation_preview(bucket, gcs_path: str, mime_type: str) -> str:
     """Cache a PDF alongside the immutable original, including for existing uploads."""
-    preview_path = f"{gcs_path}.preview.pdf"
+    preview_path = f"{gcs_path}{PREVIEW_SUFFIX}"
     preview = bucket.blob(preview_path)
     if not preview.exists():
         pdf = office_to_pdf(bucket.blob(gcs_path).download_as_bytes(), mime_type)
@@ -190,7 +191,7 @@ async def delete_file(file_id: UUID, request: Request, user_id: str = Depends(au
         raise HTTPException(status_code=404, detail="File not found")
     # The row goes first, so the file disappears for the user even if storage is briefly unreachable;
     # a leftover object is harmless (nothing points to it, and the bucket's soft delete expires it).
-    for object_path in (gcs_path, f"{gcs_path}.preview.pdf"):
+    for object_path in (gcs_path, f"{gcs_path}.preview.pdf", f"{gcs_path}{PREVIEW_SUFFIX}"):
         try:
             await asyncio.to_thread(delete_object, request.app.state.gcs_bucket, object_path)
         except Exception:

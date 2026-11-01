@@ -18,10 +18,10 @@ def test_presentation_preview_caches_pdf(monkeypatch, cached):
     preview, original = MagicMock(), MagicMock()
     preview.exists.return_value = cached
     original.download_as_bytes.return_value = b"slides"
-    bucket.blob.side_effect = lambda path: preview if path.endswith(".preview.pdf") else original
+    bucket.blob.side_effect = lambda path: preview if path.endswith(".preview-v2.pdf") else original
     convert = MagicMock(return_value=b"%PDF-slides")
     monkeypatch.setattr(files, "office_to_pdf", convert)
-    assert files.presentation_preview(bucket, "users/me/docs/deck.pptx", PPTX) == "users/me/docs/deck.pptx.preview.pdf"
+    assert files.presentation_preview(bucket, "users/me/docs/deck.pptx", PPTX) == "users/me/docs/deck.pptx.preview-v2.pdf"
     if cached:
         convert.assert_not_called()
         original.download_as_bytes.assert_not_called()
@@ -35,7 +35,7 @@ def test_simultaneous_preview_creation_is_safe(monkeypatch):
     bucket.blob.return_value.exists.return_value = False
     bucket.blob.return_value.upload_from_string.side_effect = PreconditionFailed("Already created")
     monkeypatch.setattr(files, "office_to_pdf", lambda *args: b"%PDF-slides")
-    assert files.presentation_preview(bucket, "deck.pptx", PPTX) == "deck.pptx.preview.pdf"
+    assert files.presentation_preview(bucket, "deck.pptx", PPTX) == "deck.pptx.preview-v2.pdf"
 
 
 @pytest.mark.parametrize("mime", [PPTX, "application/vnd.ms-powerpoint", "application/pdf"])
@@ -44,7 +44,7 @@ def test_file_url_returns_browser_viewable_pdf(monkeypatch, mime):
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(gcs_bucket=object(), gcs_credentials=object())))
     row = SimpleNamespace(gcs_path="deck.pptx", mime_type=mime, display_name="Lecture.pptx", kind="doc", status="ready")
     owned = AsyncMock(return_value=row)
-    preview = MagicMock(return_value="deck.pptx.preview.pdf")
+    preview = MagicMock(return_value="deck.pptx.preview-v2.pdf")
     sign = MagicMock(return_value="https://storage.example/slides.pdf")
     monkeypatch.setattr(files, "_owned_file", owned)
     monkeypatch.setattr(files, "presentation_preview", preview)
@@ -56,7 +56,7 @@ def test_file_url_returns_browser_viewable_pdf(monkeypatch, mime):
     if mime == "application/pdf":
         preview.assert_not_called()
     else:
-        sign.assert_called_once_with(ANY, ANY, "deck.pptx.preview.pdf", "application/pdf", "Lecture.pdf")
+        sign.assert_called_once_with(ANY, ANY, "deck.pptx.preview-v2.pdf", "application/pdf", "Lecture.pdf")
 
 
 def test_failed_preview_returns_readable_error(monkeypatch):
@@ -79,4 +79,4 @@ def test_deleting_file_removes_cached_preview(monkeypatch):
     delete = MagicMock()
     monkeypatch.setattr(files, "delete_object", delete)
     asyncio.run(files.delete_file(uuid4(), request, "me"))
-    assert delete.call_args_list == [call(bucket, "deck.pptx"), call(bucket, "deck.pptx.preview.pdf")]
+    assert delete.call_args_list == [call(bucket, "deck.pptx"), call(bucket, "deck.pptx.preview.pdf"), call(bucket, "deck.pptx.preview-v2.pdf")]

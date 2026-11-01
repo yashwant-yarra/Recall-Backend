@@ -18,6 +18,7 @@ def test_bad_uuid_ignored():
 
 def test_presentation_preview_ignored():
     assert file_id_from_object_name(f"users/user1/docs/{uuid4()}.pptx.preview.pdf") is None
+    assert file_id_from_object_name(f"users/user1/docs/{uuid4()}.pptx.preview-v2.pdf") is None
 
 # A live claim must not be acknowledged: a 2xx would stop Eventarc redelivering,
 # and a crashed worker's file would stay 'processing' forever.
