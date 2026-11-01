@@ -11,7 +11,7 @@ from sqlalchemy import text
 from recall import auth
 from recall.db import PLAN_LIMIT, UTC_DAY_START
 from recall.extract import office_to_pdf
-from recall.storage import delete_object, sign_download_url, sign_upload_url
+from recall.storage import delete_object, delete_prefix, sign_download_url, sign_upload_url
 
 from .config import settings
 
@@ -177,6 +177,23 @@ async def file_text(file_id: UUID, request: Request, user_id: str = Depends(auth
             "WHERE file_id = :id GROUP BY page ORDER BY page NULLS FIRST"
         ), {"id": file_id})).all()
     return {"pages": [{"page": r.page, "text": r.text} for r in rows]}
+
+
+@router.delete("/data", status_code=204)
+async def clear_data(request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """Delete everything the user has stored: files (with their chunks and voice notes), chats and
+    messages, agent runs and steps, tasks, drafts and quizzes, then their objects in the bucket.
+    The account, plan and billing stay."""
+    # Fixed list (never user input), so building the SQL with an f-string is safe.
+    async with request.app.state.engine.begin() as conn:
+        for table in ("agent_runs", "chats", "tasks", "drafts", "quizzes", "files"):
+            await conn.execute(text(f"DELETE FROM {table} WHERE user_id = :uid"), {"uid": user_id})
+    # Rows first (as in delete_file), so the data is gone for the user even if storage fails. The
+    # trailing slash stops 'users/ab' from matching another user's 'users/abc/'.
+    try:
+        await asyncio.to_thread(delete_prefix, request.app.state.gcs_bucket, f"users/{user_id}/")
+    except Exception:
+        logger.exception("Cleared the rows for user %s, but removing their storage objects failed", user_id)
 
 
 @router.delete("/files/{file_id}", status_code=204)

@@ -63,3 +63,16 @@ def delete_object(bucket, gcs_path: str) -> None:
         bucket.blob(gcs_path).delete()
     except NotFound:
         pass
+
+
+def delete_prefix(bucket, prefix: str) -> int:
+    """Delete every object whose path starts with prefix (one at a time, so one failure doesn't stop
+    the rest); returns how many were deleted. The prefix must end with '/'."""
+    deleted = 0
+    for blob in bucket.list_blobs(prefix=prefix):
+        try:
+            blob.delete()
+            deleted += 1
+        except NotFound:
+            pass
+    return deleted
