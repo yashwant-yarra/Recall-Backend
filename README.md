@@ -49,7 +49,7 @@ Every `/api/v1` route needs `Authorization: Bearer <Firebase ID token>`; every q
 | `POST` | `/api/v1/billing/checkout` | Creates a Razorpay subscription for Pro → `{subscription_id, url}` (Razorpay-hosted payment page). |
 | `POST` | `/api/v1/billing/webhook` | Called by Razorpay, not users: no login, but the HMAC signature must match. |
 
-Daily limits per user (UTC day, all configurable): free 50 uploads, 200 questions, 20 agent runs; Pro 500, 2,000, 200. Over the limit → 429.
+Daily limits per user (UTC day, all configurable): free 10 uploads, 40 questions, 15 agent runs; Pro 50 uploads, 500 questions, 50 agent runs. Over the limit → 429.
 
 ## Design decisions
 

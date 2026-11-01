@@ -21,13 +21,13 @@ class Settings(BaseSettings):
     summary_model: str = "gemini-3.5-flash-lite"
     agent_model: str = "gemini-3.5-flash"  # multi-step tool use benefits from the larger model
     agent_max_steps: int = 8  # tool calls per run before it is stopped
-    agent_daily_runs: int = 20  # runs per user per UTC day
-    daily_uploads: int = 50  # POST /files per user per UTC day
-    daily_questions: int = 200  # POST /ask per user per UTC day (each one is a Gemini call)
+    agent_daily_runs: int = 15  # runs per user per UTC day
+    daily_uploads: int = 10  # POST /files per user per UTC day
+    daily_questions: int = 40  # POST /ask per user per UTC day (each one is a Gemini call)
     # Pro plan limits (same units as the free ones above).
-    pro_daily_uploads: int = 500
-    pro_daily_questions: int = 2000
-    pro_agent_daily_runs: int = 200
+    pro_daily_uploads: int = 50
+    pro_daily_questions: int = 500
+    pro_agent_daily_runs: int = 50
     # Razorpay billing. Unset keys = billing switched off (the billing endpoints return 503).
     razorpay_key_id: str | None = None  # rzp_test_... (identifies the account; not secret)
     razorpay_key_secret: str | None = None  # Secret Manager in production
