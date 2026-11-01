@@ -165,3 +165,19 @@ def test_wording_feedback_corrects_previous_refusal_without_sources(monkeypatch)
     assert "event: done" in events
     assert execute.await_args_list[-1].args[1]["citations"] == "[]"
     search.assert_not_awaited()
+
+
+def test_web_sources_reads_grounding_chunks():
+    from google.genai import types
+
+    from recall.ask import web_sources
+
+    def chunk(*pages):
+        meta = types.GroundingMetadata(grounding_chunks=[
+            types.GroundingChunk(web=types.GroundingChunkWeb(uri=u, title=t)) for u, t in pages])
+        return types.GenerateContentResponse(candidates=[types.Candidate(grounding_metadata=meta)])
+
+    assert web_sources(chunk(("https://a.example/x", "a.example"))) == [
+        {"kind": "web", "uri": "https://a.example/x", "title": "a.example"}]
+    assert web_sources(types.GenerateContentResponse(candidates=[types.Candidate()])) == []  # no grounding
+    assert web_sources(types.GenerateContentResponse()) == []  # no candidates at all

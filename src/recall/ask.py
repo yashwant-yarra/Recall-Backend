@@ -57,6 +57,27 @@ EXPLAIN_SYSTEM = (
     + GUARD
 )
 
+# Added to the tutor prompt only when the student switched web search on. The tool itself is the
+# switch; this keeps it on the documents' subject and keeps web material visibly separate.
+WEB_RULES = (
+    " You may use Google Search, but only for facts about the subject of the student's documents, to add "
+    "background to a question that the documents are about. Never search for or answer unrelated topics. "
+    "Everything that comes from the web goes in the 'Beyond your document:' paragraph and is never cited with [n]. "
+    "If web results disagree with the documents, say so and prefer the documents."
+)
+
+
+def web_sources(chunk) -> list[dict]:
+    """The web pages Google Search grounding used, from one streamed response chunk."""
+    found = []
+    for candidate in getattr(chunk, "candidates", None) or []:
+        meta = candidate.grounding_metadata
+        for g in (meta.grounding_chunks or []) if meta else []:
+            if g.web and g.web.uri:
+                found.append({"kind": "web", "uri": g.web.uri, "title": g.web.title or g.web.uri})
+    return found
+
+
 HISTORY_TURNS = 6  # earlier messages included, so follow-ups like "explain that again" make sense
 
 REFUSAL = "I don't know based on your documents."
@@ -95,6 +116,7 @@ class AskRequest(BaseModel):
     chat_id: UUID | None = None
     file_id: UUID | None = None  # ask about one document; only used when starting a chat
     mode: Literal["answer", "explain"] = "answer"
+    web_search: bool = False  # Explain mode only: let the tutor add Google Search background
 
 
 def sse(event: str, data) -> str:
@@ -122,6 +144,16 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
         ), {"uid": user_id, "free": settings.daily_questions, "pro": settings.pro_daily_questions})).scalar_one()
         if over:
             raise HTTPException(status_code=429, detail="Daily question limit reached for your plan")
+        if body.web_search and body.mode == "explain":
+            # Grounded answers cost extra. Counted from saved answers that carry web sources, so
+            # it needs no table of its own. Checked here, before the question is saved.
+            web_over = (await conn.execute(text(
+                "SELECT (SELECT count(*) FROM messages m JOIN chats c ON c.id = m.chat_id "
+                "WHERE c.user_id = :uid AND m.role = 'assistant' AND m.citations @> '[{\"kind\": \"web\"}]' "
+                f"AND m.created_at >= {UTC_DAY_START}) >= {PLAN_LIMIT}"
+            ), {"uid": user_id, "free": settings.daily_web_searches, "pro": settings.pro_daily_web_searches})).scalar_one()
+            if web_over:
+                raise HTTPException(status_code=429, detail="Daily web search limit reached for your plan. Turn off web search to keep asking.")
 
         history = []
         if body.chat_id is None:
@@ -179,6 +211,11 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
         types.Part(text=f"Latest user question:\n{body.question}"),
     ]))
     system = EXPLAIN_SYSTEM if body.mode == "explain" else ANSWER_SYSTEM
+    # Quick answer is "only from your document", so web search is Explain-only; and with no matching
+    # documents there is no subject to stay related to.
+    use_web = body.web_search and body.mode == "explain" and bool(hits)
+    if use_web:
+        system += WEB_RULES
     genai = request.app.state.genai
 
     citations = [{"n": i, "chunk_id": str(h["id"]), "file_id": str(h["file_id"]), "kind": h["kind"],
@@ -189,11 +226,16 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
         yield sse("sources", citations)
         parts = []
         pending = "" if body.mode == "explain" and BACKGROUND_REQUEST.search(body.question) else None
+        web = {}  # uri -> source, so a page used twice shows once
         try:
             async for part in await genai.aio.models.generate_content_stream(
                 model=settings.answer_model, contents=contents,
-                config=types.GenerateContentConfig(system_instruction=system, temperature=0.3 if body.mode == "explain" else 0.2),
+                config=types.GenerateContentConfig(
+                    system_instruction=system, temperature=0.3 if body.mode == "explain" else 0.2,
+                    tools=[types.Tool(google_search=types.GoogleSearch())] if use_web else None),
             ):
+                for w in web_sources(part):
+                    web.setdefault(w["uri"], w)
                 if part.text:
                     token = part.text
                     if pending is not None:
@@ -208,11 +250,13 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
                 token = background_prefix(pending, final=True)
                 parts.append(token)
                 yield sse("token", token)
+            if web:
+                yield sse("web", list(web.values()))
             async with engine.begin() as conn:
                 await conn.execute(
                     text("INSERT INTO messages (chat_id, role, content, citations) "
                          "VALUES (:cid, 'assistant', :content, CAST(:citations AS jsonb))"),
-                    {"cid": chat_id, "content": "".join(parts), "citations": json.dumps(citations)})
+                    {"cid": chat_id, "content": "".join(parts), "citations": json.dumps(citations + list(web.values()))})
         except Exception:
             logger.exception("Answer stream failed")
             yield sse("error", "Answer generation failed")

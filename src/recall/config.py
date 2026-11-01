@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     pro_daily_uploads: int = 50
     pro_daily_questions: int = 500
     pro_agent_daily_runs: int = 50
+    daily_web_searches: int = 10  # answers that used Google Search grounding per user per UTC day (billed extra)
+    pro_daily_web_searches: int = 100
     daily_quizzes: int = 5  # generated quizzes per user per UTC day (grading is part of the quiz)
     pro_daily_quizzes: int = 30
     quiz_model: str = "gemini-3.5-flash"  # writing good questions and grading answers needs the larger model
