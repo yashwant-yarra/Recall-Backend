@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -68,7 +68,7 @@ async def list_runs(request: Request, user_id: str = Depends(auth.get_current_us
     async with request.app.state.engine.connect() as conn:
         rows = (await conn.execute(text(
             "SELECT id, goal, status, answer, error, created_at FROM agent_runs "
-            "WHERE user_id = :uid ORDER BY created_at DESC LIMIT 20"
+            "WHERE user_id = :uid AND goal <> '' ORDER BY created_at DESC LIMIT 20"
         ), {"uid": user_id})).all()
     return {"runs": [{"run_id": str(r.id), "goal": r.goal, "status": r.status, "answer": r.answer,
                       "error": r.error, "created_at": r.created_at.isoformat()} for r in rows]}
@@ -79,7 +79,7 @@ async def get_run(run_id: UUID, request: Request, user_id: str = Depends(auth.ge
     """One run with its steps, so a past run can be reviewed, or approved if it's still waiting."""
     async with request.app.state.engine.connect() as conn:
         run = (await conn.execute(text(
-            "SELECT id, goal, status, answer, error, created_at FROM agent_runs WHERE id = :id AND user_id = :uid"
+            "SELECT id, goal, status, answer, error, created_at FROM agent_runs WHERE id = :id AND user_id = :uid AND goal <> ''"
         ), {"id": run_id, "uid": user_id})).first()
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
@@ -90,3 +90,23 @@ async def get_run(run_id: UUID, request: Request, user_id: str = Depends(auth.ge
             "error": run.error, "created_at": run.created_at.isoformat(),
             "steps": [{"step_no": s.step_no, "tool": s.tool, "args": s.args, "output": s.output,
                        "status": s.status} for s in steps]}
+
+
+@router.delete("/agent/runs/{run_id}", status_code=204)
+async def delete_run(run_id: UUID, request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    async with request.app.state.engine.begin() as conn:
+        # Keep a content-free row for the daily run quota; an empty goal cannot be created via the API.
+        deleted = (await conn.execute(text(
+            "UPDATE agent_runs SET goal = '', answer = NULL, error = NULL "
+            "WHERE id = :id AND user_id = :uid AND goal <> '' "
+            "AND status IN ('done', 'failed') RETURNING id"
+        ), {"id": run_id, "uid": user_id})).scalar_one_or_none()
+        if deleted is None:
+            status = (await conn.execute(text(
+                "SELECT status FROM agent_runs WHERE id = :id AND user_id = :uid AND goal <> ''"
+            ), {"id": run_id, "uid": user_id})).scalar_one_or_none()
+            if status is None:
+                raise HTTPException(status_code=404, detail="Run not found")
+            raise HTTPException(status_code=409, detail="Only completed or failed runs can be deleted")
+        await conn.execute(text("DELETE FROM agent_steps WHERE run_id = :id"), {"id": run_id})
+    return Response(status_code=204)
