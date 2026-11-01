@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     answer_model: str = "gemini-3.5-flash-lite"
     transcribe_model: str = "gemini-3.5-transcribe"
     summary_model: str = "gemini-3.5-flash-lite"
+    agent_model: str = "gemini-3.5-flash"  # multi-step tool use benefits from the larger model
+    agent_max_steps: int = 8  # tool calls per run before it is stopped
+    agent_daily_runs: int = 20  # runs per user per UTC day
     # A processing claim older than this is treated as abandoned (the worker crashed) and can be
     # reclaimed. Must exceed the worker's Cloud Run request timeout (default 300 s), so a live
     # request is always killed before its claim expires.
