@@ -1,5 +1,7 @@
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -35,6 +37,17 @@ class Settings(BaseSettings):
     razorpay_plan_id: str | None = None  # plan_... of the monthly Pro plan
     razorpay_total_count: int = 12  # billing cycles per subscription (Razorpay requires a number)
     razorpay_api_url: str = "https://api.razorpay.com/v1"
+    # Browser origins allowed to call the API (exact scheme + host + port, no trailing slash).
+    # Env var as a plain comma-separated list, no JSON quotes to get mangled by a shell:
+    # CORS_ORIGINS=http://localhost:3000,https://recall.vercel.app
+    cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _split_origins(cls, value):
+        if isinstance(value, str):
+            return [origin.strip().rstrip("/") for origin in value.split(",") if origin.strip()]
+        return value
     # A processing claim older than this is treated as abandoned (the worker crashed) and can be
     # reclaimed. Must exceed the worker's Cloud Run request timeout (default 300 s), so a live
     # request is always killed before its claim expires.

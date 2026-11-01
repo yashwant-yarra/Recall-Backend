@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 import google.auth
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import storage
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
@@ -25,6 +26,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+# Lets the browser frontend call the API from its own origin. Auth is a Bearer header, not cookies,
+# so credentials stay off; only the methods and headers the API uses are allowed.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+    max_age=3600,  # browsers cache the preflight for an hour instead of asking before every call
+)
 app.include_router(files.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(ask.router, prefix="/api/v1")
