@@ -10,7 +10,9 @@ from sqlalchemy.exc import OperationalError
 
 from .config import settings
 from recall.db import make_engine
-from . import auth, files, search, ask, agent_api, billing, quiz, speech
+from . import auth, files, search, ask, agent_api, billing, quiz, speech, live
+from google import genai
+
 from .embeddings import make_genai_client
 
 @asynccontextmanager
@@ -21,6 +23,8 @@ async def lifespan(app: FastAPI):
     app.state.gcs_credentials = credentials
     app.state.gcs_bucket = storage.Client(credentials=credentials, project=project).bucket(settings.gcs_bucket)
     app.state.genai = make_genai_client()
+    # Gemini Live is only served from one region, so it gets its own client.
+    app.state.genai_live = genai.Client(vertexai=True, project=settings.google_cloud_project, location=settings.live_location)
     yield
     await engine.dispose()
 
@@ -42,6 +46,7 @@ app.include_router(agent_api.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/api/v1")
 app.include_router(quiz.router, prefix="/api/v1")
 app.include_router(speech.router, prefix="/api/v1")
+app.include_router(live.router, prefix="/api/v1")
 
 logger = logging.getLogger(__name__)
 

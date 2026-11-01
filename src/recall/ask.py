@@ -78,6 +78,18 @@ def background_prefix(text: str, final: bool = False) -> str | None:
             return rest
     return text
 
+# Answer languages offered in the UI. A fixed list, so nothing user-typed reaches the prompt here.
+Language = Literal["English", "Hindi", "Telugu", "Tamil", "Kannada", "Malayalam", "Marathi",
+                   "Bengali", "Gujarati", "Punjabi", "Urdu", "Odia"]
+
+
+def language_instruction(language: str | None) -> str:
+    if language:
+        return (f" Write your whole answer in {language}, even if the sources are in another language; "
+                "keep technical terms recognizable, adding the English term in brackets where it helps.")
+    return " Answer in the same language the student used in the question."
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     chat_id: UUID | None = None

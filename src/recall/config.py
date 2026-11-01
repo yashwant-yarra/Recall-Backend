@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     tts_voice: str = "Kore"
     max_voice_input_bytes: int = 2 * 1024 * 1024  # ~2 minutes of compressed speech
     max_tts_chars: int = 600
+    # Live voice conversation (Gemini Live). The model is only served from us-central1.
+    live_model: str = "gemini-live-2.5-flash-native-audio"
+    live_location: str = "us-central1"
+    daily_live_seconds: int = 10 * 60  # free: 10 minutes a day
+    pro_daily_live_seconds: int = 60 * 60
+    max_live_session_seconds: int = 10 * 60  # keep below the Cloud Run request timeout
     # Razorpay billing. Unset keys = billing switched off (the billing endpoints return 503).
     razorpay_key_id: str | None = None  # rzp_test_... (identifies the account; not secret)
     razorpay_key_secret: str | None = None  # Secret Manager in production

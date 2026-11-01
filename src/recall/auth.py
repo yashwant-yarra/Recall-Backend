@@ -47,7 +47,12 @@ async def _ensure_user(engine, user_id: str, email: str) -> None:
 
 
 async def get_current_user_id(request: Request) -> str:
-    token = bearer_token(request.headers.get("authorization"))
+    return await user_from_token(bearer_token(request.headers.get("authorization")), request.app.state.engine)
+
+
+async def user_from_token(token: str | None, engine) -> str:
+    """The user ID for a Firebase ID token, or HTTPException 401/409/503. Shared by HTTP routes
+    (token from the Authorization header) and the live WebSocket (token from its first message)."""
     if token is None:
         # Local development only. DEV_USER_ID is never set on Cloud Run, so production requires a
         # token and fails closed.
@@ -68,6 +73,6 @@ async def get_current_user_id(request: Request) -> str:
         raise HTTPException(status_code=401, detail="Account has no email")
     # ponytail: per-process memory; each new instance re-checks a user once, which is harmless.
     if user_id not in _known_users:
-        await _ensure_user(request.app.state.engine, user_id, email)
+        await _ensure_user(engine, user_id, email)
         _known_users.add(user_id)
     return user_id
