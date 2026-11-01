@@ -66,3 +66,4 @@ def test_billing_off_without_keys(client, monkeypatch):
     assert client.post("/billing/webhook", content="{}").status_code == 503
     assert client.post("/billing/checkout").status_code == 503
     assert client.post("/billing/cancel").status_code == 503
+    assert client.get("/billing/subscription").status_code == 503

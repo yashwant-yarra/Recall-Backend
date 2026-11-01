@@ -77,18 +77,33 @@ async def checkout(request: Request, user_id: str = Depends(auth.get_current_use
 
 @router.post("/billing/cancel")
 async def cancel(request: Request, user_id: str = Depends(auth.get_current_user_id)):
-    """Cancel the user's Pro subscription now. users.plan is NOT changed here: Razorpay answers with a
-    subscription.cancelled webhook, and the webhook stays the only place the plan changes."""
+    """Stop Pro from renewing: the user keeps Pro until the month they paid for ends. users.plan is NOT
+    changed here: when the period ends Razorpay sends subscription.cancelled and the webhook (still the
+    only place the plan changes) moves the user to free."""
     _require_keys()
+    sid = await _pro_subscription_id(request, user_id)
+    # cancel_at_cycle_end = 1: the subscription stays 'active' (so Pro stays) until the period ends.
+    sub = await _razorpay("POST", f"/subscriptions/{sid}/cancel", json={"cancel_at_cycle_end": 1})
+    return {"cancel_scheduled": True, "ends_at": sub.get("current_end")}
+
+
+@router.get("/billing/subscription")
+async def subscription(request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """Whether a Pro user's subscription is set to end, and when (unix seconds), so the UI can say so."""
+    _require_keys()
+    sid = await _pro_subscription_id(request, user_id)
+    sub = await _razorpay("GET", f"/subscriptions/{sid}")
+    return {"cancel_scheduled": bool(sub.get("has_scheduled_changes")), "ends_at": sub.get("current_end")}
+
+
+async def _pro_subscription_id(request: Request, user_id: str) -> str:
     async with request.app.state.engine.connect() as conn:
         row = (await conn.execute(
             text("SELECT plan, razorpay_subscription_id FROM users WHERE id = :uid"), {"uid": user_id}
         )).one()
     if row.plan != "pro" or not row.razorpay_subscription_id:
         raise HTTPException(status_code=409, detail="Not on Pro")
-    # cancel_at_cycle_end = 0: stop immediately (1 would keep Pro until the paid month ends).
-    await _razorpay("POST", f"/subscriptions/{row.razorpay_subscription_id}/cancel", json={"cancel_at_cycle_end": 0})
-    return {"status": "cancelling"}
+    return row.razorpay_subscription_id
 
 
 @router.post("/billing/webhook")
