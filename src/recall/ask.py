@@ -35,6 +35,11 @@ def sse(event: str, data) -> str:
 
 router = APIRouter()
 
+def source_label(hit:dict) -> str:
+    if hit['kind'] == "audio":
+        return "voice note"
+    else:
+        return f"page {hit['page']}"
 
 @router.post("/ask")
 async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)):
@@ -55,11 +60,11 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
             {"cid": chat_id, "content": body.question})
 
     hits = await hybrid_search(request.app, user_id, body.question)
-    sources = "\n\n".join(f"[{i}] (page {h['page']})\n{h['content']}" for i, h in enumerate(hits, 1))
+    sources = "\n\n".join(f"[{i}] ({source_label(h)})\n{h['content']}" for i, h in enumerate(hits, 1))
     prompt = f"Sources:\n{sources}\n\nQuestion: {body.question}"
     genai = request.app.state.genai
 
-    citations = [{"n": i, "chunk_id": str(h["id"]), "file_id": str(h["file_id"]),
+    citations = [{"n": i, "chunk_id": str(h["id"]), "file_id": str(h["file_id"]),"kind": h["kind"],
                   "page": h["page"]} for i, h in enumerate(hits, 1)]
 
     async def stream():

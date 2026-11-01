@@ -24,10 +24,11 @@ fts AS (
         ORDER BY rank DESC LIMIT :n
     ) s
 )
-SELECT c.id, c.file_id, c.page, c.content,
+SELECT c.id, c.file_id, c.page, c.content, f.kind,
        COALESCE(1.0 / (60 + vec.r), 0) + COALESCE(1.0 / (60 + fts.r), 0) AS score
 FROM vec FULL OUTER JOIN fts USING (id)
 JOIN chunks c USING (id)
+JOIN files f ON f.id = c.file_id
 ORDER BY score DESC
 LIMIT :k
 """)
