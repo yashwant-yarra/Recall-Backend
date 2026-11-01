@@ -40,7 +40,7 @@ Every `/api/v1` route needs `Authorization: Bearer <Firebase ID token>`; every q
 | `GET` | `/health` | Liveness, no DB. |
 | `GET` | `/health/db` | `SELECT 1` against Neon; 503 if unreachable. |
 | `GET` | `/me` | The current user's ID and plan (`free` / `pro`). |
-| `POST` | `/api/v1/files` | `{mime_type, size_bytes, display_name?}` → `{file_id, upload_url, upload_headers}`. PDF, DOCX, TXT and audio (webm, mp3, m4a, wav); max 25 MiB. |
+| `POST` | `/api/v1/files` | `{mime_type, size_bytes, display_name?}` → `{file_id, upload_url, upload_headers}`. PDF, DOC, DOCX, PPT, PPTX, TXT and audio (webm, mp3, m4a, wav); max 25 MiB. |
 | `GET` | `/api/v1/files` | The user's files with status, name, preview text and voice-note summary. |
 | `GET` | `/api/v1/files/{id}/url` | A 5-minute signed link to view the original (PDF viewer, audio player). |
 | `GET` | `/api/v1/files/{id}/text` | Extracted text by page (Word preview, voice-note transcript). |
@@ -123,6 +123,8 @@ Credentials are mounted at run time, never baked into the image.
 - Migrations: `uv run python -m alembic upgrade head`
 - Try the agent from the terminal: `uv run python -m recall.agent <user_id> "your goal"` (asks y/N for writes)
 - Call a tool directly: `uv run python -m recall.tools list_voice_notes <user_id> '{"limit": 5}'`
+
+Office extraction: DOC, PPT and PPTX require `libreoffice` on the worker's PATH, with Writer and Impress installed (included in the Docker image). They are converted to PDF in a private temporary directory, then extracted page by page or slide by slide. Conversion times out after 60 seconds; encrypted files must be unlocked first. DOCX uses python-docx directly. Office previews show extracted text; images and speaker notes are not indexed. Run `pytest tests/test_office_integration.py` with LibreOffice installed to check real DOC, PPT and PPTX conversions.
 
 ## Deployment
 

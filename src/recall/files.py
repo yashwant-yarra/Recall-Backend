@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 # Allow-list: mime type -> (kind, extension). Anything not listed is rejected.
 ALLOWED_TYPES = {
     "application/pdf": ("doc", "pdf"),
+    "application/msword": ("doc", "doc"),
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ("doc", "docx"),
+    "application/vnd.ms-powerpoint": ("doc", "ppt"),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ("doc", "pptx"),
     "text/plain": ("doc", "txt"),
     "audio/webm": ("audio", "webm"),
     "audio/mpeg": ("audio", "mp3"),
@@ -134,7 +137,7 @@ async def file_url(file_id: UUID, request: Request, user_id: str = Depends(auth.
 
 @router.get("/files/{file_id}/text")
 async def file_text(file_id: UUID, request: Request, user_id: str = Depends(auth.get_current_user_id)):
-    """The text extracted from a file, page by page: a DOCX preview, or a voice note's transcript.
+    """The text extracted from a file, page by page: an Office preview, or a voice note's transcript.
 
     Rebuilt from chunks, so overlapping parts between chunks of a page appear twice (ponytail:
     store the full text per page if exact previews matter).

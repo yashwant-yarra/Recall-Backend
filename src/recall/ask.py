@@ -151,6 +151,17 @@ async def list_chats(request: Request, user_id: str = Depends(auth.get_current_u
                        "file_id": str(r.file_id) if r.file_id else None, "file_name": r.display_name} for r in rows]}
 
 
+@router.delete("/chats/{chat_id}", status_code=204)
+async def delete_chat(chat_id: UUID, request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """Delete an owned chat and its messages (ON DELETE CASCADE)."""
+    async with request.app.state.engine.begin() as conn:
+        deleted = (await conn.execute(text(
+            "DELETE FROM chats WHERE id = :id AND user_id = :uid RETURNING id"
+        ), {"id": chat_id, "uid": user_id})).scalar_one_or_none()
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+
 @router.get("/chats/{chat_id}/messages")
 async def chat_messages(chat_id: UUID, request: Request, user_id: str = Depends(auth.get_current_user_id)):
     """One chat's messages in order, with each answer's citations. Someone else's chat is a 404."""

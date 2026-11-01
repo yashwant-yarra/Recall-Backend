@@ -125,7 +125,7 @@ DECLARATIONS = [
     ),
     types.FunctionDeclaration(
         name="get_document",
-        description="Full text of one uploaded document (PDF, DOCX or TXT), up to 20,000 characters.",
+        description="Full text of one uploaded document (PDF, DOC, DOCX, PPT, PPTX or TXT), up to 20,000 characters.",
         parameters_json_schema={"type": "object", "properties": {"file_id": _FILE_ID},
                                 "required": ["file_id"]},
     ),
