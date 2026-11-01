@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Literal
 from uuid import UUID
 
@@ -55,6 +56,24 @@ EXPLAIN_SYSTEM = (
 
 HISTORY_TURNS = 6  # earlier messages included, so follow-ups like "explain that again" make sense
 
+REFUSAL = "I don't know based on your documents."
+BACKGROUND = "Beyond your document:"
+# shortcut: recognizes explicit English requests; add multilingual intent detection when needed.
+BACKGROUND_REQUEST = re.compile(r"\b(?:beyond|outside|other than|not in|not from)\b.{0,100}\b(?:documents?|sources?|materials?|slides?|notes?)\b", re.I)
+
+
+def background_prefix(text: str, final: bool = False) -> str | None:
+    """Hold a possible false refusal until the following text identifies it."""
+    stripped = text.lstrip()
+    if not final and REFUSAL.startswith(stripped):
+        return None
+    if stripped.startswith(REFUSAL):
+        rest = stripped[len(REFUSAL):].lstrip()
+        if not final and BACKGROUND.startswith(rest):
+            return None
+        if rest.startswith(BACKGROUND):
+            return rest
+    return text
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
@@ -135,14 +154,26 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
         yield sse("chat", {"chat_id": str(chat_id)})
         yield sse("sources", citations)
         parts = []
+        pending = "" if body.mode == "explain" and BACKGROUND_REQUEST.search(body.question) else None
         try:
             async for part in await genai.aio.models.generate_content_stream(
                 model=settings.answer_model, contents=contents,
                 config=types.GenerateContentConfig(system_instruction=system, temperature=0.3 if body.mode == "explain" else 0.2),
             ):
                 if part.text:
-                    parts.append(part.text)
-                    yield sse("token", part.text)
+                    token = part.text
+                    if pending is not None:
+                        pending += token
+                        token = background_prefix(pending)
+                        if token is None:
+                            continue
+                        pending = None
+                    parts.append(token)
+                    yield sse("token", token)
+            if pending:
+                token = background_prefix(pending, final=True)
+                parts.append(token)
+                yield sse("token", token)
             async with engine.begin() as conn:
                 await conn.execute(
                     text("INSERT INTO messages (chat_id, role, content, citations) "

@@ -87,3 +87,49 @@ def test_explain_distinguishes_requested_background_from_missing_document_facts(
     assert "When the student asks for related details beyond the document" in ask.EXPLAIN_SYSTEM
     assert "do not begin with 'I don't know based on your documents.'" in ask.EXPLAIN_SYSTEM
     assert "If the student asks what the document says about a specific fact" in ask.EXPLAIN_SYSTEM
+
+
+def test_false_refusal_is_removed_only_for_explicit_background():
+    assert ask.BACKGROUND_REQUEST.search("Can you give more details other than what's in the document?")
+    assert not ask.BACKGROUND_REQUEST.search("What voltage does the document specify?")
+    prefix = "I don't know based on your documents."
+    assert ask.background_prefix("I don't know based") is None
+    assert ask.background_prefix(prefix + "\n\nBeyond your doc") is None
+    assert ask.background_prefix(prefix + "\n\nBeyond your document: Details") == "Beyond your document: Details"
+    assert ask.background_prefix(prefix + "\n\nThe document is silent.") == prefix + "\n\nThe document is silent."
+    assert ask.background_prefix(prefix, final=True) == prefix
+    assert ask.background_prefix("I can only help with your documents.") == "I can only help with your documents."
+
+
+def test_stream_removes_split_false_refusal_and_saves_clean_answer(monkeypatch):
+    chat_id = uuid4()
+    execute = AsyncMock(side_effect=[
+        SimpleNamespace(scalar_one=lambda: False),
+        SimpleNamespace(first=lambda: SimpleNamespace(id=chat_id, file_id=None)),
+        SimpleNamespace(all=lambda: []), None, None,
+    ])
+
+    class Engine:
+        @asynccontextmanager
+        async def begin(self):
+            yield SimpleNamespace(execute=execute)
+
+    async def generate(**kwargs):
+        async def chunks():
+            for token in ("I don't know based", " on your documents.\n\nBeyond your", " document: Extra detail."):
+                yield SimpleNamespace(text=token)
+        return chunks()
+
+    genai = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=generate)))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(engine=Engine(), genai=genai)))
+    monkeypatch.setattr(ask, "hybrid_search", AsyncMock(return_value=[]))
+
+    async def run():
+        body = ask.AskRequest(question="Can you give more details other than what's in the document?", chat_id=chat_id, mode="explain")
+        response = await ask.ask(body, request, "me")
+        return "".join([event async for event in response.body_iterator])
+
+    events = asyncio.run(run())
+    assert "I don't know" not in events
+    assert "Beyond your document: Extra detail." in events
+    assert execute.await_args_list[-1].args[1]["content"] == "Beyond your document: Extra detail."
