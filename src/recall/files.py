@@ -66,3 +66,26 @@ async def create_file(body: CreateFileRequest, request: Request, user_id: str = 
         body.size_bytes,
     )
     return CreateFileResponse(file_id=file_id, upload_url=url, upload_headers=headers)
+
+
+@router.get("/files")
+async def list_files(request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """The user's 50 newest uploads with their processing status, for the UI's library.
+
+    No filenames are stored (the client's name is never trusted), so each file shows a preview:
+    the start of its first chunk, plus the summary and action items for voice notes.
+    """
+    async with request.app.state.engine.connect() as conn:
+        rows = (await conn.execute(text(
+            "SELECT f.id, f.kind, f.mime_type, f.size_bytes, f.status, f.error, f.created_at, "
+            "v.summary, v.action_items, v.topics, "
+            "(SELECT left(c.content, 160) FROM chunks c WHERE c.file_id = f.id ORDER BY c.chunk_no LIMIT 1) AS preview "
+            "FROM files f LEFT JOIN voice_notes v ON v.file_id = f.id "
+            "WHERE f.user_id = :uid ORDER BY f.created_at DESC LIMIT 50"
+        ), {"uid": user_id})).all()
+    return {"files": [{
+        "file_id": str(r.id), "kind": r.kind, "mime_type": r.mime_type, "size_bytes": r.size_bytes,
+        "status": r.status, "error": r.error, "created_at": r.created_at.isoformat(),
+        "preview": r.preview, "summary": r.summary,
+        "action_items": r.action_items or [], "topics": r.topics or [],
+    } for r in rows]}
