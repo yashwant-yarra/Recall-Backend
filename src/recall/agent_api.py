@@ -72,3 +72,21 @@ async def list_runs(request: Request, user_id: str = Depends(auth.get_current_us
         ), {"uid": user_id})).all()
     return {"runs": [{"run_id": str(r.id), "goal": r.goal, "status": r.status, "answer": r.answer,
                       "error": r.error, "created_at": r.created_at.isoformat()} for r in rows]}
+
+
+@router.get("/agent/runs/{run_id}")
+async def get_run(run_id: UUID, request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """One run with its steps, so a past run can be reviewed, or approved if it's still waiting."""
+    async with request.app.state.engine.connect() as conn:
+        run = (await conn.execute(text(
+            "SELECT id, goal, status, answer, error, created_at FROM agent_runs WHERE id = :id AND user_id = :uid"
+        ), {"id": run_id, "uid": user_id})).first()
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        steps = (await conn.execute(text(
+            "SELECT step_no, tool, args, output, status FROM agent_steps WHERE run_id = :id ORDER BY step_no"
+        ), {"id": run_id})).all()
+    return {"run_id": str(run.id), "goal": run.goal, "status": run.status, "answer": run.answer,
+            "error": run.error, "created_at": run.created_at.isoformat(),
+            "steps": [{"step_no": s.step_no, "tool": s.tool, "args": s.args, "output": s.output,
+                       "status": s.status} for s in steps]}

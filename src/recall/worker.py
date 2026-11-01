@@ -17,6 +17,7 @@ from .chunking import chunk_pages
 from .embeddings import embed, make_genai_client
 from .transcribe import transcribe
 from .summarize import summarize
+from .ocr import needs_ocr, ocr_pdf
 
 # uvicorn only configures its own loggers; without this, INFO from this module is dropped.
 logging.basicConfig(level=logging.INFO)
@@ -86,6 +87,10 @@ async def handle_event(request: Request):
             chunks = [(None, content) for _, content in chunk_pages([transcript])]
         else:
             pages = await asyncio.to_thread(extract_text, data, row.mime_type)
+            if row.mime_type == "application/pdf" and needs_ocr(pages):
+                # A scan or photographed notes: no text layer, so let Gemini read the page images.
+                logger.info("No text layer in %s; reading it with OCR", file_id)
+                pages = await ocr_pdf(request.app.state.genai, data)
             chunks = chunk_pages(pages)
         if not chunks:
             raise ValueError("No extractable text")

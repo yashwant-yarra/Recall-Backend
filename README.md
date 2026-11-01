@@ -2,7 +2,7 @@
 
 A GenAI knowledge backend with three connected features over one shared index:
 
-1. **Document chat (RAG):** upload PDF, DOCX or TXT, then ask questions and get streamed answers with `[n]` citations back to the source page.
+1. **Document chat (RAG), built for students:** upload PDFs (scanned ones too), pick one, ask doubts and get streamed answers with `[n]` citations back to the page, either as a step-by-step tutor explanation or a strict quick answer. Generate practice quizzes from a document and get them graded.
 2. **Voice notes:** upload a recording; it's transcribed, summarized into action items and topics, and indexed next to your documents.
 3. **Agent:** give it a goal; a hand-written function-calling loop looks things up with tools, and asks for your approval before it creates a task or saves a draft.
 
@@ -40,16 +40,24 @@ Every `/api/v1` route needs `Authorization: Bearer <Firebase ID token>`; every q
 | `GET` | `/health` | Liveness, no DB. |
 | `GET` | `/health/db` | `SELECT 1` against Neon; 503 if unreachable. |
 | `GET` | `/me` | The current user's ID and plan (`free` / `pro`). |
-| `POST` | `/api/v1/files` | `{mime_type, size_bytes}` → `{file_id, upload_url, upload_headers}`. PDF, DOCX, TXT and audio (webm, mp3, m4a, wav); max 25 MiB. |
-| `GET` | `/api/v1/search?q=` | Top 8 chunks from hybrid search, each with `kind` (`doc` / `audio`) and `page`. |
-| `POST` | `/api/v1/ask` | `{question, chat_id?}` → SSE: `chat`, `sources`, `token`…, `done`. Chat and messages are saved. |
+| `POST` | `/api/v1/files` | `{mime_type, size_bytes, display_name?}` → `{file_id, upload_url, upload_headers}`. PDF, DOCX, TXT and audio (webm, mp3, m4a, wav); max 25 MiB. |
+| `GET` | `/api/v1/files` | The user's files with status, name, preview text and voice-note summary. |
+| `GET` | `/api/v1/files/{id}/url` | A 5-minute signed link to view the original (PDF viewer, audio player). |
+| `GET` | `/api/v1/files/{id}/text` | Extracted text by page (Word preview, voice-note transcript). |
+| `DELETE` | `/api/v1/files/{id}` | Deletes the file, its chunks and voice note, and the stored object. |
+| `GET` | `/api/v1/search?q=&file_id=` | Top 8 chunks from hybrid search, optionally within one file, each with `kind`, `page` and `name`. |
+| `POST` | `/api/v1/ask` | `{question, chat_id?, file_id?, mode: explain\|answer}` → SSE: `chat`, `sources`, `token`…, `done`. Follow-ups see the last 6 messages. |
+| `GET` | `/api/v1/chats`, `/api/v1/chats/{id}/messages` | Chat history, with the document each chat is about. |
+| `POST` | `/api/v1/quizzes` | `{file_id, count, kind: mcq\|short\|mixed, topic?}` → questions with pages; answers stay on the server. |
+| `POST` | `/api/v1/quizzes/{id}/grade` | `{answers}` → score, feedback, answers and explanations (graded once). |
+| `GET` | `/api/v1/quizzes`, `/api/v1/quizzes/{id}` | Quiz history. |
 | `POST` | `/api/v1/agent/runs` | `{goal}` → SSE: `run`, `step`…, then `answer`, `approval_needed` or `error`. |
 | `POST` | `/api/v1/agent/runs/{id}/approve` | `{approve: true\|false}` → runs or rejects the pending write, then streams the rest of the run. 404 if nothing is pending. |
 | `GET` | `/api/v1/agent/runs` | The user's 20 most recent runs. |
 | `POST` | `/api/v1/billing/checkout` | Creates a Razorpay subscription for Pro → `{subscription_id, url}` (Razorpay-hosted payment page). |
 | `POST` | `/api/v1/billing/webhook` | Called by Razorpay, not users: no login, but the HMAC signature must match. |
 
-Daily limits per user (UTC day, all configurable): free 10 uploads, 40 questions, 15 agent runs; Pro 50 uploads, 500 questions, 50 agent runs. Over the limit → 429.
+Daily limits per user (UTC day, all configurable): free 10 uploads, 40 questions, 5 quizzes, 15 agent runs; Pro 50 uploads, 500 questions, 30 quizzes, 50 agent runs. Over the limit → 429.
 
 ## Design decisions
 
@@ -62,6 +70,13 @@ Daily limits per user (UTC day, all configurable): free 10 uploads, 40 questions
 - **Gemini Transcribe on Vertex, not faster-whisper.** faster-whisper worked, but needed a model in the image, CPU time and a memory budget. `gemini-3.5-transcribe` is one API call (about 6 s end to end for a short note). The trade-off: on Vertex it returns plain text only, so there are no timestamps; voice notes are cited as a whole, not "at 2:15". Timestamps would need the Gemini Developer API with an API key, which breaks the no-keys design.
 - **Structured summaries.** `summarize()` uses a pydantic `response_schema`, so Gemini's output is always valid JSON with `summary`, `action_items` and `topics`.
 - **One index.** Voice-note chunks live in the same `chunks` table as documents, so search and `/ask` cover both with no extra code.
+
+**For students**
+- **Per-document chat.** Search can be limited to one file. pgvector's HNSW index filters after it finds neighbors, so a strict filter could return nothing; iterative scans (`hnsw.iterative_scan`, pgvector 0.8) keep scanning until enough rows match.
+- **Tutor mode.** "Explain" answers step by step in simple words, still citing pages, and puts anything not from the document under "Beyond your document:". "Quick answer" keeps the strict facts-only mode.
+- **Quizzes.** Generated with a structured schema (question, options, answer, explanation, page). Answers stay on the server until the student submits, so they can't be read in the browser first. Short answers are graded in one model call per quiz.
+- **Scanned PDFs.** When pypdf finds almost no text (under 40 characters per page), Gemini reads the page images instead.
+- **Names are for display only.** The client's file name is cleaned (last path part, printable characters, 200 max) and never used in storage paths.
 
 **Search and answers**
 - **Hybrid search.** pgvector cosine (HNSW on `halfvec(768)`) plus Postgres full-text (`tsvector`, OR query), merged with reciprocal rank fusion (`1 / (60 + rank)`).
@@ -81,7 +96,7 @@ Daily limits per user (UTC day, all configurable): free 10 uploads, 40 questions
 
 **Security and operations**
 - **Firebase Auth.** The API verifies ID tokens with `google-auth` (signature, expiry, issuer, audience = this project) and creates the `users` row on first sight. No token → 401; production has no development bypass.
-- **Least privilege.** Each service has its own service account, with grants scoped to one resource. The API can create objects but not read them; the worker can read but not write.
+- **Least privilege.** Each service has its own service account, with grants scoped to one resource. The API can create, read and delete objects in the bucket (uploads, previews, deletion: `storage.objectUser` on that bucket only); the worker can only read.
 - **Fail fast on bad config.** The bucket name is validated at startup, so a mangled deploy command fails the deploy instead of breaking uploads.
 - **Migrations by hand.** Alembic with raw SQL (autogenerate handles `halfvec`, HNSW and `tsvector` badly), run before a deploy, never at startup.
 - **Cleanup.** `python -m recall.cleanup` fails uploads never completed after a day and agent runs abandoned mid-stream; `--dry-run` shows the counts and rolls back.
@@ -115,7 +130,7 @@ Both services run on Cloud Run in `asia-southeast1`, next to the Neon database, 
 
 | Service | Entry point | Access | Runs as | Current (2026-11-01) |
 | --- | --- | --- | --- | --- |
-| `recall-api` | `recall.main:app` | public; Firebase token checked in code | own service account: create objects in the bucket, read its secrets, call Vertex AI | revision `00021`, image `92b623f` |
+| `recall-api` | `recall.main:app` | public; Firebase token checked in code | own service account: create, read and delete objects in the bucket, read its secrets, call Vertex AI | revision `00021`, image `92b623f` |
 | `recall-worker` | `recall.worker:app` | private; only Eventarc (as the worker's service account) can call it | own service account: read objects, call Vertex AI | revision `00008`, image `86c66e3` |
 
 The worker image is older because none of the later commits (billing, limits) changed worker code; the API is redeployed alone in that case.
@@ -181,4 +196,6 @@ The PDF-only run on 2026-10-31 gave the same retrieval (16/20, 18/20) and 19/20 
 5. ~~Backend polish~~: Firebase Auth, daily limits, cleanup command, config validation
 6. ~~Billing~~: Razorpay Pro subscription, signed idempotent webhooks, plan-aware limits
 
-Next ideas: a frontend (Next.js) with in-browser recording, a reranker or query rewriting for paraphrase retrieval, a larger eval corpus, scheduled cleanup (Cloud Scheduler), CI/CD with Workload Identity Federation.
+The browser frontend (Next.js) lives in a separate repo, `Recall-UI`.
+
+Next ideas: a reranker or query rewriting for paraphrase retrieval, a larger eval corpus, scheduled cleanup (Cloud Scheduler), CI/CD with Workload Identity Federation.

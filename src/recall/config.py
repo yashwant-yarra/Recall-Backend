@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     dev_user_id: str | None = None
     max_upload_size: int = 25 * 1024 * 1024  # 25 MB
     upload_url_ttl_seconds: int = 15 * 60  # 15 minutes
+    download_url_ttl_seconds: int = 5 * 60  # preview links: short-lived, re-requested on each open
     google_cloud_project: str
     vertex_location: str = "global"
     embed_dims: int = 768
@@ -30,6 +31,10 @@ class Settings(BaseSettings):
     pro_daily_uploads: int = 50
     pro_daily_questions: int = 500
     pro_agent_daily_runs: int = 50
+    daily_quizzes: int = 5  # generated quizzes per user per UTC day (grading is part of the quiz)
+    pro_daily_quizzes: int = 30
+    quiz_model: str = "gemini-3.5-flash"  # writing good questions and grading answers needs the larger model
+    ocr_model: str = "gemini-3.5-flash"  # reads scanned PDF pages when they have no text layer
     # Razorpay billing. Unset keys = billing switched off (the billing endpoints return 503).
     razorpay_key_id: str | None = None  # rzp_test_... (identifies the account; not secret)
     razorpay_key_secret: str | None = None  # Secret Manager in production

@@ -115,15 +115,30 @@ async def run_agent(app, run_id: UUID, user_id: str):
     contents = build_contents(run.goal, steps)
     try:
         for step_no in range(len(steps), settings.agent_max_steps):
-            resp = await app.state.genai.aio.models.generate_content(
-                model=settings.agent_model, contents=contents, config=CONFIG)
-            if not resp.candidates or resp.candidates[0].content is None:
-                raise ValueError(f"Model returned no content: {resp.prompt_feedback}")
-            parts = resp.candidates[0].content.parts or []
-            call = next((p for p in parts if p.function_call), None)
+            # Streamed, so a final answer reaches the user as it's written. Whether this turn is an
+            # answer or a tool call is only certain once a function-call part shows up, so text is
+            # forwarded as 'token' events until then (the UI drops a draft if a step follows).
+            call: types.Part | None = None
+            text_parts: list[str] = []
+            async for chunk in await app.state.genai.aio.models.generate_content_stream(
+                    model=settings.agent_model, contents=contents, config=CONFIG):
+                content = chunk.candidates[0].content if chunk.candidates else None
+                for part in (content.parts if content else None) or []:
+                    if part.function_call and call is None:
+                        call = part
+                    elif call is not None and part.thought_signature and call.thought_signature is None:
+                        # When streaming, the signature can arrive in a later chunk than the call.
+                        # The stored call must carry it, or replaying the history after an approval fails.
+                        call.thought_signature = part.thought_signature
+                    elif part.text and not part.thought:
+                        text_parts.append(part.text)
+                        if call is None:
+                            yield {"type": "token", "text": part.text}
 
             if call is None:  # no tool requested: this is the final answer
-                answer = (resp.text or "").strip()
+                answer = "".join(text_parts).strip()
+                if not answer:
+                    raise ValueError("Model returned neither an answer nor a tool call")
                 await _finish(engine, run_id, "done", answer=answer)
                 yield {"type": "answer", "text": answer}
                 return

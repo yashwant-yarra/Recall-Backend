@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import re
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -7,9 +9,11 @@ from sqlalchemy import text
 
 from recall import auth
 from recall.db import PLAN_LIMIT, UTC_DAY_START
-from recall.storage import sign_upload_url
+from recall.storage import delete_object, sign_download_url, sign_upload_url
 
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 # Allow-list: mime type -> (kind, extension). Anything not listed is rejected.
 ALLOWED_TYPES = {
@@ -26,6 +30,17 @@ ALLOWED_TYPES = {
 class CreateFileRequest(BaseModel):
     mime_type: str
     size_bytes: int = Field(gt=0, le=settings.max_upload_size)
+    display_name: str | None = Field(default=None, max_length=500)
+
+
+def clean_display_name(name: str | None) -> str | None:
+    """The client's file name, made safe to show: last path part only, no control characters,
+    at most 200 characters. Only ever displayed; storage paths are built from the file_id."""
+    if not name:
+        return None
+    name = re.split(r"[\\/]", name)[-1]  # browsers may send "C:\fakepath\notes.pdf"
+    name = "".join(ch for ch in name if ch.isprintable()).strip()
+    return name[:200] or None
 
 
 class CreateFileResponse(BaseModel):
@@ -48,12 +63,13 @@ async def create_file(body: CreateFileRequest, request: Request, user_id: str = 
     async with request.app.state.engine.begin() as conn:
         # Insert only while the user is under today's upload limit (count + insert in one statement).
         inserted = (await conn.execute(
-            text("INSERT INTO files (id, user_id, kind, gcs_path, mime_type, size_bytes) "
-                 "SELECT :id, :uid, :kind, :gcs_path, :mime_type, :size_bytes WHERE ("
+            text("INSERT INTO files (id, user_id, kind, gcs_path, mime_type, size_bytes, display_name) "
+                 "SELECT :id, :uid, :kind, :gcs_path, :mime_type, :size_bytes, :display_name WHERE ("
                  f"  SELECT count(*) FROM files WHERE user_id = :uid AND created_at >= {UTC_DAY_START}"
                  f") < {PLAN_LIMIT} RETURNING id"),
             {"id": str(file_id), "uid": user_id, "kind": kind, "gcs_path": gcs_path, "mime_type": body.mime_type,
-             "size_bytes": body.size_bytes, "free": settings.daily_uploads, "pro": settings.pro_daily_uploads}
+             "size_bytes": body.size_bytes, "display_name": clean_display_name(body.display_name),
+             "free": settings.daily_uploads, "pro": settings.pro_daily_uploads}
         )).scalar_one_or_none()
     if inserted is None:
         raise HTTPException(status_code=429, detail="Daily upload limit reached for your plan")
@@ -77,15 +93,74 @@ async def list_files(request: Request, user_id: str = Depends(auth.get_current_u
     """
     async with request.app.state.engine.connect() as conn:
         rows = (await conn.execute(text(
-            "SELECT f.id, f.kind, f.mime_type, f.size_bytes, f.status, f.error, f.created_at, "
+            "SELECT f.id, f.kind, f.mime_type, f.size_bytes, f.status, f.error, f.created_at, f.display_name, "
             "v.summary, v.action_items, v.topics, "
             "(SELECT left(c.content, 160) FROM chunks c WHERE c.file_id = f.id ORDER BY c.chunk_no LIMIT 1) AS preview "
             "FROM files f LEFT JOIN voice_notes v ON v.file_id = f.id "
             "WHERE f.user_id = :uid ORDER BY f.created_at DESC LIMIT 50"
         ), {"uid": user_id})).all()
     return {"files": [{
-        "file_id": str(r.id), "kind": r.kind, "mime_type": r.mime_type, "size_bytes": r.size_bytes,
+        "file_id": str(r.id), "name": r.display_name, "kind": r.kind, "mime_type": r.mime_type, "size_bytes": r.size_bytes,
         "status": r.status, "error": r.error, "created_at": r.created_at.isoformat(),
         "preview": r.preview, "summary": r.summary,
         "action_items": r.action_items or [], "topics": r.topics or [],
     } for r in rows]}
+
+
+async def _owned_file(request: Request, user_id: str, file_id: UUID):
+    """The user's file row, or 404 (someone else's file looks the same as a missing one)."""
+    async with request.app.state.engine.connect() as conn:
+        row = (await conn.execute(text(
+            "SELECT id, gcs_path, mime_type, kind, status, display_name FROM files WHERE id = :id AND user_id = :uid"
+        ), {"id": file_id, "uid": user_id})).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return row
+
+
+@router.get("/files/{file_id}/url")
+async def file_url(file_id: UUID, request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """A 5-minute link to view the original file in the browser (PDF viewer, audio player)."""
+    row = await _owned_file(request, user_id, file_id)
+    if row.status == "pending":
+        raise HTTPException(status_code=409, detail="This file hasn't finished uploading")
+    url = await asyncio.to_thread(
+        sign_download_url, request.app.state.gcs_bucket, request.app.state.gcs_credentials,
+        row.gcs_path, row.mime_type, row.display_name,
+    )
+    return {"url": url, "mime_type": row.mime_type, "kind": row.kind, "name": row.display_name,
+            "expires_in": settings.download_url_ttl_seconds}
+
+
+@router.get("/files/{file_id}/text")
+async def file_text(file_id: UUID, request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """The text extracted from a file, page by page: a DOCX preview, or a voice note's transcript.
+
+    Rebuilt from chunks, so overlapping parts between chunks of a page appear twice (ponytail:
+    store the full text per page if exact previews matter).
+    """
+    await _owned_file(request, user_id, file_id)
+    async with request.app.state.engine.connect() as conn:
+        rows = (await conn.execute(text(
+            "SELECT page, string_agg(content, E'\n' ORDER BY chunk_no) AS text FROM chunks "
+            "WHERE file_id = :id GROUP BY page ORDER BY page NULLS FIRST"
+        ), {"id": file_id})).all()
+    return {"pages": [{"page": r.page, "text": r.text} for r in rows]}
+
+
+@router.delete("/files/{file_id}", status_code=204)
+async def delete_file(file_id: UUID, request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """Delete a file everywhere: its chunks and voice note go with the row (ON DELETE CASCADE);
+    chats, quizzes and tasks that pointed to it are kept, unlinked (ON DELETE SET NULL)."""
+    async with request.app.state.engine.begin() as conn:
+        gcs_path = (await conn.execute(text(
+            "DELETE FROM files WHERE id = :id AND user_id = :uid RETURNING gcs_path"
+        ), {"id": file_id, "uid": user_id})).scalar_one_or_none()
+    if gcs_path is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    # The row goes first, so the file disappears for the user even if storage is briefly unreachable;
+    # a leftover object is harmless (nothing points to it, and the bucket's soft delete expires it).
+    try:
+        await asyncio.to_thread(delete_object, request.app.state.gcs_bucket, gcs_path)
+    except Exception:
+        logger.exception("Deleted file %s, but removing %s from storage failed", file_id, gcs_path)

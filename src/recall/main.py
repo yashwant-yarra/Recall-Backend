@@ -10,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 
 from .config import settings
 from recall.db import make_engine
-from . import auth, files, search, ask, agent_api, billing
+from . import auth, files, search, ask, agent_api, billing, quiz
 from .embeddings import make_genai_client
 
 @asynccontextmanager
@@ -31,7 +31,7 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
     max_age=3600,  # browsers cache the preflight for an hour instead of asking before every call
 )
@@ -40,6 +40,7 @@ app.include_router(search.router, prefix="/api/v1")
 app.include_router(ask.router, prefix="/api/v1")
 app.include_router(agent_api.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/api/v1")
+app.include_router(quiz.router, prefix="/api/v1")
 
 logger = logging.getLogger(__name__)
 
