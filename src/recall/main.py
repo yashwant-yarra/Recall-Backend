@@ -10,7 +10,7 @@ from sqlalchemy.exc import OperationalError
 
 from .config import settings
 from recall.db import make_engine
-from . import auth, files, search, ask, agent_api, billing, quiz, speech, live
+from . import auth, files, search, ask, agent_api, billing, quiz, speech, live, tasks_api
 from google import genai
 
 from .embeddings import make_genai_client
@@ -47,6 +47,7 @@ app.include_router(billing.router, prefix="/api/v1")
 app.include_router(quiz.router, prefix="/api/v1")
 app.include_router(speech.router, prefix="/api/v1")
 app.include_router(live.router, prefix="/api/v1")
+app.include_router(tasks_api.router, prefix="/api/v1")
 
 logger = logging.getLogger(__name__)
 
