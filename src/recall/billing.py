@@ -75,6 +75,22 @@ async def checkout(request: Request, user_id: str = Depends(auth.get_current_use
     return {"subscription_id": sub["id"], "url": sub["short_url"]}
 
 
+@router.post("/billing/cancel")
+async def cancel(request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """Cancel the user's Pro subscription now. users.plan is NOT changed here: Razorpay answers with a
+    subscription.cancelled webhook, and the webhook stays the only place the plan changes."""
+    _require_keys()
+    async with request.app.state.engine.connect() as conn:
+        row = (await conn.execute(
+            text("SELECT plan, razorpay_subscription_id FROM users WHERE id = :uid"), {"uid": user_id}
+        )).one()
+    if row.plan != "pro" or not row.razorpay_subscription_id:
+        raise HTTPException(status_code=409, detail="Not on Pro")
+    # cancel_at_cycle_end = 0: stop immediately (1 would keep Pro until the paid month ends).
+    await _razorpay("POST", f"/subscriptions/{row.razorpay_subscription_id}/cancel", json={"cancel_at_cycle_end": 0})
+    return {"status": "cancelling"}
+
+
 @router.post("/billing/webhook")
 async def webhook(request: Request):
     """Called by Razorpay, not by users: no login, but every request must carry a valid signature."""

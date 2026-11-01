@@ -65,3 +65,4 @@ def test_billing_off_without_keys(client, monkeypatch):
     monkeypatch.setattr(settings, "razorpay_key_secret", None)
     assert client.post("/billing/webhook", content="{}").status_code == 503
     assert client.post("/billing/checkout").status_code == 503
+    assert client.post("/billing/cancel").status_code == 503
