@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     daily_live_seconds: int = 10 * 60  # free: 10 minutes a day
     pro_daily_live_seconds: int = 60 * 60
     max_live_session_seconds: int = 10 * 60  # keep below the Cloud Run request timeout
+    live_web_search: bool = True  # give the voice tutor Google Search (prompt keeps it on the documents' subject)
     # Razorpay billing. Unset keys = billing switched off (the billing endpoints return 503).
     razorpay_key_id: str | None = None  # rzp_test_... (identifies the account; not secret)
     razorpay_key_secret: str | None = None  # Secret Manager in production

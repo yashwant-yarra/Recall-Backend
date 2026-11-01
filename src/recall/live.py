@@ -46,7 +46,16 @@ SEARCH_TOOL = types.Tool(function_declarations=[types.FunctionDeclaration(
 )])
 
 
-def system_prompt(doc_name: str | None, language: str | None) -> str:
+TOOLS_DOCS_ONLY = "Your only tool searches documents. "
+TOOLS_WITH_WEB = (
+    "Your tools are a search of the student's documents and Google Search. Use Google Search only for facts "
+    "about the subject of the student's documents, to add background to a question the documents are about, "
+    "and always say it is from the web and beyond the document. Never search the web for unrelated topics. "
+    "If the web disagrees with the documents, say so and prefer the documents. "
+)
+
+
+def system_prompt(doc_name: str | None, language: str | None, web: bool = True) -> str:
     scope = f'the document "{doc_name}"' if doc_name else "the student's documents"
     return (
         f"You are a friendly, patient tutor talking with a student by voice about {scope}. "
@@ -57,7 +66,8 @@ def system_prompt(doc_name: str | None, language: str | None) -> str:
         "directly as 'you' and 'your'. If there is not enough context to determine relevance, ask which document "
         "or topic they mean. For a related topic you may provide additional general background, clearly identifying "
         "it as beyond the document. Do not mistake a loosely related search result for evidence of relevance. "
-        "Your only tool searches documents. You cannot run code, access a computer, or perform external actions. "
+        + (TOOLS_WITH_WEB if web else TOOLS_DOCS_ONLY) +
+        "You cannot run code, access a computer, or perform external actions. "
         "Never offer to perform those actions or claim you ran code, saw its output, or completed an action you did not perform. "
         "If the student asks you to run code, say you cannot run it. "
         "If speech is unclear or sounds like noise, ask the student to repeat instead of guessing what they said. "
@@ -132,8 +142,10 @@ async def live(ws: WebSocket):
 
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
-        system_instruction=system_prompt(doc_name, language),
-        tools=[SEARCH_TOOL],
+        system_instruction=system_prompt(doc_name, language, settings.live_web_search),
+        # Web search is on by default; the prompt keeps it to the documents' subject. LIVE_WEB_SEARCH=false
+        # switches it off without a rebuild (e.g. if a Live model rejects both tools together).
+        tools=[SEARCH_TOOL, types.Tool(google_search=types.GoogleSearch())] if settings.live_web_search else [SEARCH_TOOL],
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
     )
