@@ -76,3 +76,16 @@ async def user_from_token(token: str | None, engine) -> str:
         await _ensure_user(engine, user_id, email)
         _known_users.add(user_id)
     return user_id
+
+
+async def identity_from_request(request: Request) -> dict:
+    """Who is calling: {"user_id", "email", "email_verified"}. For routes that need more than the user ID
+    (the free trial checks the email). Verifies the token exactly like get_current_user_id, then reads
+    its claims; with no token (local development only) the dev user counts as verified.
+    ponytail: the token is verified twice (once here, once for the user); cache the claims if it matters."""
+    token = bearer_token(request.headers.get("authorization"))
+    user_id = await user_from_token(token, request.app.state.engine)
+    if token is None:
+        return {"user_id": user_id, "email": None, "email_verified": True}
+    claims = await asyncio.to_thread(verify_token, token)
+    return {"user_id": user_id, "email": claims.get("email"), "email_verified": bool(claims.get("email_verified"))}

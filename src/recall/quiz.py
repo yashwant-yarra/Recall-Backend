@@ -16,7 +16,7 @@ from sqlalchemy import text
 
 from recall import auth
 from recall.config import settings
-from recall.db import PLAN_LIMIT, UTC_DAY_START
+from recall.db import spend
 from recall.search import hybrid_search
 
 router = APIRouter()
@@ -105,13 +105,11 @@ async def create_quiz(body: CreateQuiz, request: Request, user_id: str = Depends
             raise HTTPException(status_code=404, detail="File not found")
         if file.status != "ready":
             raise HTTPException(status_code=409, detail="This file is still being processed")
-        # ponytail: count-then-insert (generation happens in between), so two simultaneous requests
-        # at the limit can both pass; fine for a cost cap.
-        over = (await conn.execute(text(
-            f"SELECT (SELECT count(*) FROM quizzes WHERE user_id = :uid AND created_at >= {UTC_DAY_START}) >= {PLAN_LIMIT}"
-        ), {"uid": user_id, "free": settings.daily_quizzes, "pro": settings.pro_daily_quizzes})).scalar_one()
-        if over:
-            raise HTTPException(status_code=429, detail="Daily quiz limit reached for your plan")
+    # Counted in usage_events (db.spend), so deleting quizzes or clearing data does not reset the limit.
+    # Spent before generating, after the file checks above, so a bad request does not use one up.
+    if not await spend(request.app.state.engine, user_id, "quiz", settings.daily_quizzes, settings.pro_daily_quizzes,
+                       settings.ultra_daily_quizzes):
+        raise HTTPException(status_code=429, detail="Daily quiz limit reached for your plan")
 
     passages = await _context(request, user_id, body.file_id, body.topic)
     if not passages:

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from recall import auth
-from recall.db import PLAN_LIMIT, UTC_DAY_START, is_pro
+from recall.db import spend, tier_of
 from recall.extract import office_to_pdf
 from recall.storage import delete_object, delete_prefix, sign_download_url, sign_upload_url
 
@@ -65,31 +65,35 @@ async def create_file(body: CreateFileRequest, request: Request, user_id: str = 
     if body.mime_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported mime type: {body.mime_type}")
     kind, ext = ALLOWED_TYPES[body.mime_type]
-    if not await is_pro(request.app.state.engine, user_id):
-        free_mb = settings.free_max_upload_size // (1024 * 1024)
-        if body.size_bytes > settings.free_max_upload_size:
-            raise HTTPException(status_code=400, detail=f"Free plan files can be up to {free_mb} MB. Upgrade to Pro for up to {settings.max_upload_size // (1024 * 1024)} MB.")
+    tier = await tier_of(request.app.state.engine, user_id)
+    max_size, max_files, upgrade = {
+        "free": (settings.free_max_upload_size, settings.free_max_files, "Pro"),
+        "pro": (settings.pro_max_upload_size, settings.pro_max_files, "Ultra"),
+        "ultra": (settings.max_upload_size, None, None),  # no file-count cap
+    }[tier]
+    hint = f" Upgrade to {upgrade} for more." if upgrade else ""
+    if body.size_bytes > max_size:
+        raise HTTPException(status_code=400, detail=f"The {tier.capitalize()} plan allows files up to {max_size // (1024 * 1024)} MB.{hint}")
+    if max_files is not None:
         async with request.app.state.engine.connect() as conn:
             kept = (await conn.execute(text("SELECT count(*) FROM files WHERE user_id = :uid"), {"uid": user_id})).scalar_one()
         # ponytail: count-then-insert, so two simultaneous uploads at the cap can both pass by one.
-        if kept >= settings.free_max_files:
-            raise HTTPException(status_code=403, detail=f"The Free plan keeps up to {settings.free_max_files} files. Delete one or upgrade to Pro.")
+        if kept >= max_files:
+            raise HTTPException(status_code=403, detail=f"The {tier.capitalize()} plan keeps up to {max_files} files. Delete one or upgrade.{'' if not upgrade else ' ' + upgrade + ' keeps more.'}")
     file_id = uuid4()
     folder = "audio" if kind == "audio" else "docs"
     gcs_path = f"users/{user_id}/{folder}/{file_id}.{ext}"
-    async with request.app.state.engine.begin() as conn:
-        # Insert only while the user is under today's upload limit (count + insert in one statement).
-        inserted = (await conn.execute(
-            text("INSERT INTO files (id, user_id, kind, gcs_path, mime_type, size_bytes, display_name) "
-                 "SELECT :id, :uid, :kind, :gcs_path, :mime_type, :size_bytes, :display_name WHERE ("
-                 f"  SELECT count(*) FROM files WHERE user_id = :uid AND created_at >= {UTC_DAY_START}"
-                 f") < {PLAN_LIMIT} RETURNING id"),
-            {"id": str(file_id), "uid": user_id, "kind": kind, "gcs_path": gcs_path, "mime_type": body.mime_type,
-             "size_bytes": body.size_bytes, "display_name": clean_display_name(body.display_name),
-             "free": settings.daily_uploads, "pro": settings.pro_daily_uploads}
-        )).scalar_one_or_none()
-    if inserted is None:
+    # Today's upload limit is counted in usage_events (db.spend), so deleting files or clearing data does
+    # not give the uploads back. Spent after the size and file-count checks, so a refused upload uses none.
+    if not await spend(request.app.state.engine, user_id, "upload", settings.daily_uploads, settings.pro_daily_uploads,
+                       settings.ultra_daily_uploads):
         raise HTTPException(status_code=429, detail="Daily upload limit reached for your plan")
+    async with request.app.state.engine.begin() as conn:
+        await conn.execute(
+            text("INSERT INTO files (id, user_id, kind, gcs_path, mime_type, size_bytes, display_name) "
+                 "VALUES (:id, :uid, :kind, :gcs_path, :mime_type, :size_bytes, :display_name)"),
+            {"id": str(file_id), "uid": user_id, "kind": kind, "gcs_path": gcs_path, "mime_type": body.mime_type,
+             "size_bytes": body.size_bytes, "display_name": clean_display_name(body.display_name)})
     url, headers = await asyncio.to_thread(
         sign_upload_url,
         request.app.state.gcs_bucket,

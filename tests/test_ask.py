@@ -27,8 +27,8 @@ def test_latest_question_stays_separate_from_tutor_self_check(monkeypatch, mode)
     chat_id, file_id = uuid4(), uuid4()
     history = [SimpleNamespace(role="user", content="what is this about?"),
                SimpleNamespace(role="assistant", content="Electrochemistry. Check: how do galvanic and electrolytic cells differ?")]
+    monkeypatch.setattr(ask, "spend", AsyncMock(return_value=True))  # the daily question count (db.spend) is tested on its own
     execute = AsyncMock(side_effect=[
-        SimpleNamespace(scalar_one=lambda: False),
         SimpleNamespace(first=lambda: SimpleNamespace(id=chat_id, file_id=file_id)),
         SimpleNamespace(all=lambda: history), None, None,
     ])
@@ -66,7 +66,7 @@ def test_latest_question_stays_separate_from_tutor_self_check(monkeypatch, mode)
     assert "Answer the latest user question" in captured["config"].system_instruction
     assert "optional self-checks" in captured["config"].system_instruction
     assert "event: done" in events
-    assert execute.await_count == 5
+    assert execute.await_count == 4
     search.assert_awaited_once_with(request.app, "me", "what is this about?\nwhat is this about?", file_id)
 
 
@@ -105,8 +105,8 @@ def test_false_refusal_is_removed_only_for_explicit_background():
 
 def test_stream_removes_split_false_refusal_and_saves_clean_answer(monkeypatch):
     chat_id = uuid4()
+    monkeypatch.setattr(ask, "spend", AsyncMock(return_value=True))  # the daily question count (db.spend) is tested on its own
     execute = AsyncMock(side_effect=[
-        SimpleNamespace(scalar_one=lambda: False),
         SimpleNamespace(first=lambda: SimpleNamespace(id=chat_id, file_id=None)),
         SimpleNamespace(all=lambda: []), None, None,
     ])
@@ -139,8 +139,8 @@ def test_stream_removes_split_false_refusal_and_saves_clean_answer(monkeypatch):
 
 def test_wording_feedback_corrects_previous_refusal_without_sources(monkeypatch):
     chat_id = uuid4()
+    monkeypatch.setattr(ask, "spend", AsyncMock(return_value=True))  # the daily question count (db.spend) is tested on its own
     execute = AsyncMock(side_effect=[
-        SimpleNamespace(scalar_one=lambda: False),
         SimpleNamespace(first=lambda: SimpleNamespace(id=chat_id, file_id=None)),
         SimpleNamespace(all=lambda: [SimpleNamespace(role="assistant", content="I can only help with questions related to their documents.")]),
         None, None,

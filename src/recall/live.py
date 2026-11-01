@@ -26,7 +26,7 @@ from sqlalchemy import text
 from recall.ask import Language, language_instruction, source_label
 from recall.auth import user_from_token
 from recall.config import settings
-from recall.db import UTC_DAY_START, is_pro
+from recall.db import PLAN_LIMIT, UTC_DAY_START, is_pro, tier_params
 from recall.search import hybrid_search
 
 logger = logging.getLogger(__name__)
@@ -88,10 +88,11 @@ async def _reserve(engine, user_id: str) -> tuple[int, int | None]:
     at once can't both spend the full allowance. Returns (allowed_seconds, usage_row_id)."""
     async with engine.begin() as conn:
         row = (await conn.execute(text(
-            "SELECT CASE WHEN (u.plan = 'pro' OR u.trial_ends_at > now()) THEN :pro ELSE :free END AS lim, "
+            f"SELECT {PLAN_LIMIT} AS lim, "
             f"COALESCE((SELECT sum(seconds) FROM usage_events WHERE user_id = :uid AND kind = 'live' "
             f"AND created_at >= {UTC_DAY_START}), 0) AS used FROM users u WHERE u.id = :uid FOR UPDATE"
-        ), {"uid": user_id, "free": settings.daily_live_seconds, "pro": settings.pro_daily_live_seconds})).one()
+        ), {"uid": user_id, **tier_params(settings.daily_live_seconds, settings.pro_daily_live_seconds,
+                                          settings.ultra_daily_live_seconds)})).one()
         allowed = allowed_seconds(int(row.used), row.lim, settings.max_live_session_seconds)
         if allowed <= 0:
             return 0, None

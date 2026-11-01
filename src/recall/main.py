@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from .config import settings
+from recall.abuse import trial_refusal
 from recall.db import make_engine, trial_state
 from . import auth, files, search, ask, agent_api, billing, quiz, speech, live, tasks_api
 from google import genai
@@ -70,27 +71,35 @@ async def read_health_db(request: Request):
 
 
 def plan_limits() -> list[dict]:
-    """What each plan includes, for the UI's plan table. A free value of 0 means 'Pro only';
-    a pro value of None means unlimited. Read from settings so the screen can't drift from the real limits."""
+    """What each tier includes, for the UI's plan table. A free value of 0 means 'paid tiers only';
+    a value of None means unlimited. Read from settings so the screen can't drift from the real limits."""
     s, mb = settings, 1024 * 1024
+
+    def row(key, label, free, pro, ultra):
+        return {"key": key, "label": label, "free": free, "pro": pro, "ultra": ultra}
+
     return [
-        {"key": "questions", "label": "Questions per day", "free": s.daily_questions, "pro": s.pro_daily_questions},
-        {"key": "uploads", "label": "Uploads per day", "free": s.daily_uploads, "pro": s.pro_daily_uploads},
-        {"key": "quizzes", "label": "Quizzes per day", "free": s.daily_quizzes, "pro": s.pro_daily_quizzes},
-        {"key": "voice_inputs", "label": "Spoken questions per day", "free": s.daily_voice_inputs, "pro": s.pro_daily_voice_inputs},
-        {"key": "read_aloud", "label": "Read-aloud requests per day", "free": s.daily_tts_requests, "pro": s.pro_daily_tts_requests},
-        {"key": "live_minutes", "label": "Talk minutes per day", "free": s.daily_live_seconds // 60, "pro": s.pro_daily_live_seconds // 60},
-        {"key": "agent_runs", "label": "Agent runs per day", "free": s.agent_daily_runs, "pro": s.pro_agent_daily_runs},
-        {"key": "web_searches", "label": "Web search answers per day", "free": s.daily_web_searches, "pro": s.pro_daily_web_searches},
-        {"key": "max_files", "label": "Files kept at once", "free": s.free_max_files, "pro": None},
-        {"key": "max_file_mb", "label": "Largest file (MB)", "free": s.free_max_upload_size // mb, "pro": s.max_upload_size // mb},
+        row("questions", "Questions per day", s.daily_questions, s.pro_daily_questions, s.ultra_daily_questions),
+        row("uploads", "Uploads per day", s.daily_uploads, s.pro_daily_uploads, s.ultra_daily_uploads),
+        row("quizzes", "Quizzes per day", s.daily_quizzes, s.pro_daily_quizzes, s.ultra_daily_quizzes),
+        row("voice_inputs", "Spoken questions per day", s.daily_voice_inputs, s.pro_daily_voice_inputs, s.ultra_daily_voice_inputs),
+        row("read_aloud", "Read-aloud requests per day", s.daily_tts_requests, s.pro_daily_tts_requests, s.ultra_daily_tts_requests),
+        row("live_minutes", "Talk minutes per day", s.daily_live_seconds // 60, s.pro_daily_live_seconds // 60, s.ultra_daily_live_seconds // 60),
+        row("agent_runs", "Agent runs per day", s.agent_daily_runs, s.pro_agent_daily_runs, s.ultra_agent_daily_runs),
+        row("web_searches", "Web search answers per day", s.daily_web_searches, s.pro_daily_web_searches, s.ultra_daily_web_searches),
+        row("max_files", "Files kept at once", s.free_max_files, s.pro_max_files, None),
+        row("max_file_mb", "Largest file (MB)", s.free_max_upload_size // mb, s.pro_max_upload_size // mb, s.max_upload_size // mb),
     ]
 
 
 @app.get("/me")
-async def read_current_user(request: Request, user_id: str = Depends(auth.get_current_user_id)):
+async def read_current_user(request: Request, who: dict = Depends(auth.identity_from_request)):
+    user_id = who["user_id"]
     async with request.app.state.engine.connect() as conn:
         row = (await conn.execute(text("SELECT plan, trial_ends_at FROM users WHERE id = :uid"), {"uid": user_id})).one()
+    trial = trial_state(row.plan, row.trial_ends_at, datetime.now(timezone.utc))
+    # blocked: why a trial that is still available cannot start yet (unverified or throwaway email), in words.
+    trial["blocked"] = trial_refusal(who["email"], who["email_verified"]) if trial["available"] else None
     # plan is what the user pays for; trial says whether Pro access is running without payment.
-    return {"user_id": user_id, "plan": row.plan, "trial": trial_state(row.plan, row.trial_ends_at, datetime.now(timezone.utc)),
+    return {"user_id": user_id, "plan": row.plan, "email_verified": who["email_verified"], "trial": trial,
             "limits": plan_limits()}

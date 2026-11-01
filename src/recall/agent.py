@@ -10,7 +10,7 @@ from google.genai import types
 from sqlalchemy import text
 
 from recall.config import settings
-from recall.db import PLAN_LIMIT, UTC_DAY_START, make_engine
+from recall.db import make_engine, spend
 from recall.embeddings import make_genai_client
 from recall.tools import DECLARATIONS, TOOLS
 
@@ -51,21 +51,16 @@ def build_contents(goal: str, steps: list[dict]) -> list[types.Content]:
 
 
 async def create_run(engine, user_id: str, goal: str) -> UUID | None:
-    """Insert a run, unless the user hit their plan's daily run limit (UTC day). None = over quota.
+    """Insert a run, unless the user hit their tier's daily run limit (UTC day). None = over quota.
 
-    The count and the insert are one statement, so there's no gap between checking and inserting.
-    ponytail: two truly simultaneous requests can still both pass (each counts before the other
-    commits); an advisory lock per user would make it exact if the quota ever guards real money.
+    The use is counted in usage_events (db.spend), so deleting runs or clearing data does not reset it.
     """
+    if not await spend(engine, user_id, "agent", settings.agent_daily_runs, settings.pro_agent_daily_runs,
+                       settings.ultra_agent_daily_runs):
+        return None
     async with engine.begin() as conn:
-        return (await conn.execute(text(
-            "INSERT INTO agent_runs (user_id, goal) "
-            "SELECT :uid, :goal WHERE ("
-            f"  SELECT count(*) FROM agent_runs WHERE user_id = :uid AND created_at >= {UTC_DAY_START}"
-            f") < {PLAN_LIMIT} "
-            "RETURNING id"
-        ), {"uid": user_id, "goal": goal, "free": settings.agent_daily_runs,
-            "pro": settings.pro_agent_daily_runs})).scalar_one_or_none()
+        return (await conn.execute(text("INSERT INTO agent_runs (user_id, goal) VALUES (:uid, :goal) RETURNING id"),
+                                   {"uid": user_id, "goal": goal})).scalar_one()
 
 
 async def _load(conn, run_id: UUID, user_id: str):

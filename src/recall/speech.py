@@ -16,7 +16,7 @@ from sqlalchemy import text
 
 from recall import auth
 from recall.config import settings
-from recall.db import PLAN_LIMIT, UTC_DAY_START
+from recall.db import spend
 from recall.transcribe import transcribe
 
 router = APIRouter()
@@ -45,16 +45,9 @@ def sample_rate(mime_type: str | None, default: int = 24000) -> int:
     return int(m.group(1)) if m else default
 
 
-async def meter(request: Request, user_id: str, kind: str, free: int, pro: int) -> None:
-    """Record one use, unless today's limit for the user's plan is reached (429).
-    Counting and recording are one statement, so there's no gap between check and insert."""
-    async with request.app.state.engine.begin() as conn:
-        recorded = (await conn.execute(text(
-            "INSERT INTO usage_events (user_id, kind) SELECT :uid, :kind WHERE ("
-            f"  SELECT count(*) FROM usage_events WHERE user_id = :uid AND kind = :kind AND created_at >= {UTC_DAY_START}"
-            f") < {PLAN_LIMIT} RETURNING id"
-        ), {"uid": user_id, "kind": kind, "free": free, "pro": pro})).scalar_one_or_none()
-    if recorded is None:
+async def meter(request: Request, user_id: str, kind: str, free: int, pro: int, ultra: int) -> None:
+    """Record one use, unless today's limit for the user's plan is reached (429)."""
+    if not await spend(request.app.state.engine, user_id, kind, free, pro, ultra):
         raise HTTPException(status_code=429, detail="Daily voice limit reached for your plan")
 
 
@@ -70,13 +63,13 @@ async def transcribe_question(request: Request, user_id: str = Depends(auth.get_
         raise HTTPException(status_code=422, detail="Empty recording")
     if len(audio) > settings.max_voice_input_bytes:  # the header can be missing or wrong
         raise HTTPException(status_code=413, detail="Recording too long; keep it under about 2 minutes")
-    await meter(request, user_id, "transcribe", settings.daily_voice_inputs, settings.pro_daily_voice_inputs)
+    await meter(request, user_id, "transcribe", settings.daily_voice_inputs, settings.pro_daily_voice_inputs, settings.ultra_daily_voice_inputs)
     return {"text": await transcribe(request.app.state.genai, audio, mime)}
 
 
 @router.post("/speech/tts")
 async def speak(body: SpeakRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)):
-    await meter(request, user_id, "tts", settings.daily_tts_requests, settings.pro_daily_tts_requests)
+    await meter(request, user_id, "tts", settings.daily_tts_requests, settings.pro_daily_tts_requests, settings.ultra_daily_tts_requests)
     resp = await request.app.state.genai.aio.models.generate_content(
         model=settings.tts_model,
         contents=body.text,
@@ -97,7 +90,7 @@ async def speak(body: SpeakRequest, request: Request, user_id: str = Depends(aut
 
 @router.post("/speech/tts/stream")
 async def speak_stream(body: SpeakRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)):
-    await meter(request, user_id, "tts", settings.daily_tts_requests, settings.pro_daily_tts_requests)
+    await meter(request, user_id, "tts", settings.daily_tts_requests, settings.pro_daily_tts_requests, settings.ultra_daily_tts_requests)
     stream = await request.app.state.genai.aio.models.generate_content_stream(
         model=settings.tts_model, contents=body.text,
         config=types.GenerateContentConfig(

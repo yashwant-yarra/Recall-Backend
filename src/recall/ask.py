@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from recall import auth
 from recall.config import settings
-from recall.db import PLAN_LIMIT, UTC_DAY_START, require_pro
+from recall.db import require_pro, spend
 from recall.search import hybrid_search
 
 logger = logging.getLogger(__name__)
@@ -136,27 +136,19 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
     engine = request.app.state.engine
     if body.web_search and body.mode == "explain":  # Pro only; refused before anything is saved
         await require_pro(engine, user_id, "Web search")
+    # Each question is a Gemini call, so cap them per user per UTC day. Counted in usage_events (db.spend),
+    # so deleting chats or clearing data does not reset the limit. Checked before the stream starts, so the
+    # client gets a real 429.
+    if not await spend(engine, user_id, "question", settings.daily_questions, settings.pro_daily_questions,
+                       settings.ultra_daily_questions):
+        raise HTTPException(status_code=429, detail="Daily question limit reached for your plan")
+    if body.web_search and body.mode == "explain":
+        # Grounded answers cost extra, so they have their own daily count (asked for, whether or not
+        # the model ends up searching).
+        if not await spend(engine, user_id, "web", settings.daily_web_searches, settings.pro_daily_web_searches,
+                           settings.ultra_daily_web_searches):
+            raise HTTPException(status_code=429, detail="Daily web search limit reached for your plan. Turn off web search to keep asking.")
     async with engine.begin() as conn:
-        # Each question is a Gemini call, so cap them per user per UTC day. Checked before the stream
-        # starts, so the client gets a real 429. ponytail: count-then-insert, so two simultaneous
-        # questions at the limit can both pass; fine for a cost cap, not for exact billing.
-        over = (await conn.execute(text(
-            "SELECT (SELECT count(*) FROM messages m JOIN chats c ON c.id = m.chat_id "
-            f"WHERE c.user_id = :uid AND m.role = 'user' AND m.created_at >= {UTC_DAY_START}) >= {PLAN_LIMIT}"
-        ), {"uid": user_id, "free": settings.daily_questions, "pro": settings.pro_daily_questions})).scalar_one()
-        if over:
-            raise HTTPException(status_code=429, detail="Daily question limit reached for your plan")
-        if body.web_search and body.mode == "explain":
-            # Grounded answers cost extra. Counted from saved answers that carry web sources, so
-            # it needs no table of its own. Checked here, before the question is saved.
-            web_over = (await conn.execute(text(
-                "SELECT (SELECT count(*) FROM messages m JOIN chats c ON c.id = m.chat_id "
-                "WHERE c.user_id = :uid AND m.role = 'assistant' AND m.citations @> '[{\"kind\": \"web\"}]' "
-                f"AND m.created_at >= {UTC_DAY_START}) >= {PLAN_LIMIT}"
-            ), {"uid": user_id, "free": settings.daily_web_searches, "pro": settings.pro_daily_web_searches})).scalar_one()
-            if web_over:
-                raise HTTPException(status_code=429, detail="Daily web search limit reached for your plan. Turn off web search to keep asking.")
-
         history = []
         if body.chat_id is None:
             file_id = body.file_id

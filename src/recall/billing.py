@@ -1,8 +1,9 @@
-"""Razorpay billing: a monthly Pro subscription that raises the daily limits.
+"""Razorpay billing: monthly Pro and Ultra subscriptions that raise the daily limits.
 
-Flow: POST /billing/checkout creates a Razorpay subscription and returns its hosted payment link
-(card details never touch this server). After payment, Razorpay calls POST /billing/webhook; that
-is the only place users.plan changes.
+Flow: POST /billing/checkout {tier} creates a Razorpay subscription on that tier's plan and returns its
+hosted payment link (card details never touch this server). After payment, Razorpay calls
+POST /billing/webhook; that is the only place users.plan changes, and the subscription's plan says
+which tier it buys. The free trial (POST /billing/trial) needs no payment and lives in users.trial_ends_at.
 
 No Razorpay SDK: the REST API is two calls (create and fetch a subscription), made with httpx
 (async), and the webhook signature is a plain HMAC-SHA256, checked with the standard library.
@@ -10,24 +11,43 @@ No Razorpay SDK: the REST API is two calls (create and fetch a subscription), ma
 import hashlib
 import hmac
 import logging
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy import text
 
 from recall import auth
+from recall.abuse import trial_refusal
 from recall.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Subscription statuses that grant Pro. ponytail: 'pending' (a failed renewal Razorpay is still
+# Subscription statuses that grant a paid tier. ponytail: 'pending' (a failed renewal Razorpay is still
 # retrying) drops to free immediately; add it here for a grace period.
-PRO_STATUSES = {"active"}
+PAID_STATUSES = {"active"}
 
 
-def plan_for_status(status: str | None) -> str:
-    return "pro" if status in PRO_STATUSES else "free"
+def plan_id_for(tier: str) -> str | None:
+    """The Razorpay plan that sells a tier. razorpay_plan_id existed before tiers, so it is Ultra."""
+    return settings.razorpay_pro_plan_id if tier == "pro" else settings.razorpay_plan_id
+
+
+def tier_for_plan_id(plan_id: str | None) -> str:
+    """Which tier a subscription buys, from its Razorpay plan. Anything but the Pro plan is Ultra: that is
+    the plan existing subscribers already pay for."""
+    return "pro" if settings.razorpay_pro_plan_id and plan_id == settings.razorpay_pro_plan_id else "ultra"
+
+
+def plan_for_subscription(status: str | None, plan_id: str | None) -> str:
+    """The users.plan a subscription gives: its tier while active, otherwise free."""
+    return tier_for_plan_id(plan_id) if status in PAID_STATUSES else "free"
+
+
+class CheckoutRequest(BaseModel):
+    tier: Literal["pro", "ultra"]
 
 
 def valid_signature(body: bytes, signature: str | None, secret: str) -> bool:
@@ -55,19 +75,24 @@ async def _razorpay(method: str, path: str, json: dict | None = None) -> dict:
 
 
 @router.post("/billing/checkout")
-async def checkout(request: Request, user_id: str = Depends(auth.get_current_user_id)):
+async def checkout(body: CheckoutRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    """Start paying for a tier. Free can buy either; Pro can move up to Ultra (the webhook then cancels the
+    Pro subscription). Moving down is not offered: switch to Free first, then choose Pro."""
     _require_keys()
-    if not settings.razorpay_plan_id:
-        raise HTTPException(status_code=503, detail="Billing is not configured")
+    plan_id = plan_id_for(body.tier)
+    if not plan_id:
+        raise HTTPException(status_code=503, detail=f"{body.tier.capitalize()} is not available yet")
     async with request.app.state.engine.connect() as conn:
         plan = (await conn.execute(text("SELECT plan FROM users WHERE id = :uid"), {"uid": user_id})).scalar_one()
-    if plan == "pro":
-        raise HTTPException(status_code=409, detail="Already on Pro")
+    if plan == body.tier:
+        raise HTTPException(status_code=409, detail=f"Already on {plan.capitalize()}")
+    if plan == "ultra":
+        raise HTTPException(status_code=409, detail="To move to Pro, switch to Free first, then choose Pro")
 
     # user_id goes in notes, set by this server. Webhooks are signed, so notes in a verified event
     # can be trusted to say which user a subscription belongs to.
     sub = await _razorpay("POST", "/subscriptions", json={
-        "plan_id": settings.razorpay_plan_id,
+        "plan_id": plan_id,
         "total_count": settings.razorpay_total_count,
         "quantity": 1,
         "notes": {"user_id": user_id},
@@ -76,14 +101,19 @@ async def checkout(request: Request, user_id: str = Depends(auth.get_current_use
 
 
 @router.post("/billing/trial")
-async def start_trial(request: Request, user_id: str = Depends(auth.get_current_user_id)):
-    """Start the account's one free trial of Pro. Works without Razorpay (no card), so no keys needed.
-    One statement checks and sets: only a free account that never had a trial matches, so a double click
-    or a second attempt matches nothing."""
+async def start_trial(request: Request, who: dict = Depends(auth.identity_from_request)):
+    """Start the account's one free trial (Pro, the middle tier). Works without Razorpay (no card), so no
+    keys needed. The email must be verified and not a throwaway address (abuse.trial_refusal). One
+    statement checks and sets: only a free account that never had a trial matches, so a double click or a
+    second attempt matches nothing."""
+    user_id = who["user_id"]
+    refusal = trial_refusal(who["email"], who["email_verified"])
+    if refusal:
+        raise HTTPException(status_code=403, detail=refusal)
     async with request.app.state.engine.begin() as conn:
         ends_at = (await conn.execute(text(
             "UPDATE users SET trial_ends_at = now() + make_interval(days => :days) "
-            "WHERE id = :uid AND plan <> 'pro' AND trial_ends_at IS NULL RETURNING trial_ends_at"
+            "WHERE id = :uid AND plan = 'free' AND trial_ends_at IS NULL RETURNING trial_ends_at"
         ), {"uid": user_id, "days": settings.trial_days})).scalar_one_or_none()
     if ends_at is None:
         raise HTTPException(status_code=409, detail="The free trial was already used on this account")
@@ -96,8 +126,8 @@ async def cancel(request: Request, user_id: str = Depends(auth.get_current_user_
     changed here: when the period ends Razorpay sends subscription.cancelled and the webhook (still the
     only place the plan changes) moves the user to free."""
     _require_keys()
-    sid = await _pro_subscription_id(request, user_id)
-    # cancel_at_cycle_end = 1: the subscription stays 'active' (so Pro stays) until the period ends.
+    sid = await _paid_subscription_id(request, user_id)
+    # cancel_at_cycle_end = 1: the subscription stays 'active' (so the tier stays) until the period ends.
     sub = await _razorpay("POST", f"/subscriptions/{sid}/cancel", json={"cancel_at_cycle_end": 1})
     return {"cancel_scheduled": True, "ends_at": sub.get("current_end")}
 
@@ -106,18 +136,18 @@ async def cancel(request: Request, user_id: str = Depends(auth.get_current_user_
 async def subscription(request: Request, user_id: str = Depends(auth.get_current_user_id)):
     """Whether a Pro user's subscription is set to end, and when (unix seconds), so the UI can say so."""
     _require_keys()
-    sid = await _pro_subscription_id(request, user_id)
+    sid = await _paid_subscription_id(request, user_id)
     sub = await _razorpay("GET", f"/subscriptions/{sid}")
     return {"cancel_scheduled": bool(sub.get("has_scheduled_changes")), "ends_at": sub.get("current_end")}
 
 
-async def _pro_subscription_id(request: Request, user_id: str) -> str:
+async def _paid_subscription_id(request: Request, user_id: str) -> str:
     async with request.app.state.engine.connect() as conn:
         row = (await conn.execute(
             text("SELECT plan, razorpay_subscription_id FROM users WHERE id = :uid"), {"uid": user_id}
         )).one()
-    if row.plan != "pro" or not row.razorpay_subscription_id:
-        raise HTTPException(status_code=409, detail="Not on Pro")
+    if row.plan == "free" or not row.razorpay_subscription_id:
+        raise HTTPException(status_code=409, detail="Not on a paid plan")
     return row.razorpay_subscription_id
 
 
@@ -136,6 +166,7 @@ async def webhook(request: Request):
     event_id = request.headers.get("x-razorpay-event-id") or hashlib.sha256(body).hexdigest()
 
     sub = None
+    replaced = None  # the subscription an upgrade replaces, cancelled after the plan change commits
     if event_type.startswith("subscription."):
         sub_id = event["payload"]["subscription"]["entity"]["id"]
         # Events can arrive out of order (an old 'charged' after 'cancelled'), so fetch the
@@ -155,12 +186,18 @@ async def webhook(request: Request):
             if not user_id:
                 logger.warning("Razorpay subscription %s has no user_id note", sub["id"])
                 return {"status": "ignored"}
-            if plan_for_status(sub["status"]) == "pro":
-                # An active subscription makes the user Pro and becomes their current subscription.
+            tier = plan_for_subscription(sub["status"], sub.get("plan_id"))
+            if tier != "free":
+                # An active subscription gives the user its tier and becomes their current subscription.
+                previous = (await conn.execute(text(
+                    "SELECT razorpay_subscription_id FROM users WHERE id = :uid FOR UPDATE"
+                ), {"uid": user_id})).scalar_one_or_none()
                 await conn.execute(text(
-                    "UPDATE users SET plan = 'pro', subscription_status = :status, razorpay_subscription_id = :sid "
+                    "UPDATE users SET plan = :tier, subscription_status = :status, razorpay_subscription_id = :sid "
                     "WHERE id = :uid"
-                ), {"status": sub["status"], "sid": sub["id"], "uid": user_id})
+                ), {"tier": tier, "status": sub["status"], "sid": sub["id"], "uid": user_id})
+                if previous and previous != sub["id"]:
+                    replaced = previous  # an upgrade: the old subscription must stop billing
             else:
                 # Only the user's current subscription can downgrade them: an old, abandoned one
                 # being cancelled must not take Pro away.
@@ -169,4 +206,12 @@ async def webhook(request: Request):
                     "WHERE id = :uid AND razorpay_subscription_id = :sid"
                 ), {"status": sub["status"], "sid": sub["id"], "uid": user_id})
             logger.info("Razorpay %s: subscription %s is %s for user %s", event_type, sub["id"], sub["status"], user_id)
+    if replaced:
+        # After the plan change is committed. Its own 'cancelled' event is then ignored (it is no longer
+        # the current subscription). If this call fails the user keeps the new tier; the old one has to
+        # be cancelled in the Razorpay dashboard, so say so loudly.
+        try:
+            await _razorpay("POST", f"/subscriptions/{replaced}/cancel", json={"cancel_at_cycle_end": 0})
+        except HTTPException:
+            logger.error("Upgrade for user %s: old subscription %s was NOT cancelled; cancel it in Razorpay", user_id, replaced)
     return {"status": "ok"}

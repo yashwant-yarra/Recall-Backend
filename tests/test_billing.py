@@ -27,10 +27,21 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def test_plan_for_status():
-    assert billing.plan_for_status("active") == "pro"
+def test_plan_for_subscription(monkeypatch):
+    monkeypatch.setattr(settings, "razorpay_pro_plan_id", "plan_pro")
+    monkeypatch.setattr(settings, "razorpay_plan_id", "plan_ultra")
+    assert billing.plan_for_subscription("active", "plan_pro") == "pro"
+    assert billing.plan_for_subscription("active", "plan_ultra") == "ultra"
+    assert billing.plan_for_subscription("active", "plan_legacy") == "ultra"  # the plan existing subscribers already pay for
+    assert billing.plan_for_subscription("active", None) == "ultra"
     for status in ("created", "authenticated", "pending", "halted", "cancelled", "completed", "expired", None):
-        assert billing.plan_for_status(status) == "free"
+        assert billing.plan_for_subscription(status, "plan_pro") == "free"
+
+
+def test_pro_plan_unset_means_every_plan_is_ultra(monkeypatch):
+    monkeypatch.setattr(settings, "razorpay_pro_plan_id", None)
+    assert billing.tier_for_plan_id(None) == "ultra"  # never matches an unset id by accident
+    assert billing.plan_id_for("pro") is None
 
 
 def test_valid_signature():
@@ -64,6 +75,7 @@ def test_billing_off_without_keys(client, monkeypatch):
     monkeypatch.setattr(settings, "razorpay_key_id", None)
     monkeypatch.setattr(settings, "razorpay_key_secret", None)
     assert client.post("/billing/webhook", content="{}").status_code == 503
-    assert client.post("/billing/checkout").status_code == 503
+    assert client.post("/billing/checkout", json={"tier": "pro"}).status_code == 503
+    assert client.post("/billing/checkout", json={"tier": "gold"}).status_code == 422  # only pro or ultra
     assert client.post("/billing/cancel").status_code == 503
     assert client.get("/billing/subscription").status_code == 503

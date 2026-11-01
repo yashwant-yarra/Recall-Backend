@@ -12,10 +12,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env")
     db_echo: bool = False
     dev_user_id: str | None = None
-    max_upload_size: int = 25 * 1024 * 1024  # 25 MB (Pro, and the absolute ceiling)
+    max_upload_size: int = 25 * 1024 * 1024  # 25 MB (Ultra, and the absolute ceiling)
     free_max_upload_size: int = 5 * 1024 * 1024  # Free: 5 MB per file
-    trial_days: int = 7  # one free trial of Pro per account, opt-in, no card
-    free_max_files: int = 5 # Free: documents and voice notes kept at once (new uploads only; nothing is deleted)
+    pro_max_upload_size: int = 15 * 1024 * 1024  # Pro: 15 MB per file
+    trial_days: int = 7  # one free trial per account, opt-in, no card; it gives Pro (the middle tier)
+    # Files kept at once (new uploads only; nothing already stored is deleted). Ultra has no cap.
+    free_max_files: int = 5
+    pro_max_files: int = 50
     upload_url_ttl_seconds: int = 15 * 60  # 15 minutes
     download_url_ttl_seconds: int = 5 * 60  # preview links: short-lived, re-requested on each open
     google_cloud_project: str
@@ -27,26 +30,33 @@ class Settings(BaseSettings):
     summary_model: str = "gemini-3.5-flash-lite"
     agent_model: str = "gemini-3.5-flash"  # multi-step tool use benefits from the larger model
     agent_max_steps: int = 8  # tool calls per run before it is stopped
-    # Free limits. Agent, web search and live Talk are Pro-only: their free value is 0, and the routes
-    # also refuse Free users with a clear message (db.require_pro) before this count is reached.
+    # Three tiers: Free, Pro (middle) and Ultra (the former Pro numbers). Names without a prefix are Free,
+    # pro_* is Pro and ultra_* is Ultra. Agent, web search and live Talk are for paid tiers: their free
+    # value is 0, and the routes also refuse Free users with a clear message (db.require_pro).
     agent_daily_runs: int = 0  # runs per user per UTC day
     daily_uploads: int = 3  # POST /files per user per UTC day
     daily_questions: int = 15  # POST /ask per user per UTC day (each one is a Gemini call)
-    # Pro plan limits (same units as the free ones above).
-    pro_daily_uploads: int = 50
-    pro_daily_questions: int = 500
-    pro_agent_daily_runs: int = 50
+    pro_daily_uploads: int = 15
+    pro_daily_questions: int = 150
+    pro_agent_daily_runs: int = 15
+    ultra_daily_uploads: int = 50
+    ultra_daily_questions: int = 500
+    ultra_agent_daily_runs: int = 50
     daily_web_searches: int = 0  # answers that used Google Search grounding per user per UTC day (billed extra)
-    pro_daily_web_searches: int = 100
+    pro_daily_web_searches: int = 30
+    ultra_daily_web_searches: int = 100
     daily_quizzes: int = 2  # generated quizzes per user per UTC day (grading is part of the quiz)
-    pro_daily_quizzes: int = 30
+    pro_daily_quizzes: int = 10
+    ultra_daily_quizzes: int = 30
     quiz_model: str = "gemini-3.5-flash"  # writing good questions and grading answers needs the larger model
     ocr_model: str = "gemini-3.5-flash"  # reads scanned PDF pages when they have no text layer
     # Voice: questions spoken into the mic, and answers read aloud (counted per request).
     daily_voice_inputs: int = 10
-    pro_daily_voice_inputs: int = 300
+    pro_daily_voice_inputs: int = 100
+    ultra_daily_voice_inputs: int = 300
     daily_tts_requests: int = 50  # one request per piece of an answer (~a sentence or two)
-    pro_daily_tts_requests: int = 1500
+    pro_daily_tts_requests: int = 500
+    ultra_daily_tts_requests: int = 1500
     tts_model: str = "gemini-2.5-flash-tts"
     tts_voice: str = "Kore"
     max_voice_input_bytes: int = 2 * 1024 * 1024  # ~2 minutes of compressed speech
@@ -54,15 +64,20 @@ class Settings(BaseSettings):
     # Live voice conversation (Gemini Live). The model is only served from us-central1.
     live_model: str = "gemini-live-2.5-flash-native-audio"
     live_location: str = "us-central1"
-    daily_live_seconds: int = 0  # free: none (Pro only)
-    pro_daily_live_seconds: int = 60 * 60
+    daily_live_seconds: int = 0  # free: none (paid tiers only)
+    pro_daily_live_seconds: int = 20 * 60
+    ultra_daily_live_seconds: int = 60 * 60
     max_live_session_seconds: int = 10 * 60  # keep below the Cloud Run request timeout
     live_web_search: bool = True  # give the voice tutor Google Search (prompt keeps it on the documents' subject)
     # Razorpay billing. Unset keys = billing switched off (the billing endpoints return 503).
     razorpay_key_id: str | None = None  # rzp_test_... (identifies the account; not secret)
     razorpay_key_secret: str | None = None  # Secret Manager in production
     razorpay_webhook_secret: str | None = None  # chosen when creating the webhook; Secret Manager
-    razorpay_plan_id: str | None = None  # plan_... of the monthly Pro plan
+    # Two monthly Razorpay plans. razorpay_plan_id is the one that already exists (RAZORPAY_PLAN_ID), so it
+    # is now the Ultra plan and current subscribers keep what they pay for; razorpay_pro_plan_id is the new
+    # middle plan (create it in the Razorpay dashboard). Unset = that tier cannot be bought yet (503).
+    razorpay_plan_id: str | None = None  # plan_... of the monthly Ultra plan
+    razorpay_pro_plan_id: str | None = None  # plan_... of the monthly Pro plan
     razorpay_total_count: int = 12  # billing cycles per subscription (Razorpay requires a number)
     razorpay_api_url: str = "https://api.razorpay.com/v1"
     # Browser origins allowed to call the API (exact scheme + host + port, no trailing slash).
