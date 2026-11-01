@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError
 
 from .config import settings
 from recall.db import make_engine
-from . import auth, files, search, ask
+from . import auth, files, search, ask, agent_api
 from .embeddings import make_genai_client
 
 @asynccontextmanager
@@ -28,6 +28,7 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(files.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(ask.router, prefix="/api/v1")
+app.include_router(agent_api.router, prefix="/api/v1")
 
 logger = logging.getLogger(__name__)
 

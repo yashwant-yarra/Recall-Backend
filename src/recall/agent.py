@@ -50,11 +50,22 @@ def build_contents(goal: str, steps: list[dict]) -> list[types.Content]:
     return contents
 
 
-async def create_run(engine, user_id: str, goal: str) -> UUID:
+async def create_run(engine, user_id: str, goal: str) -> UUID | None:
+    """Insert a run, unless the user already started agent_daily_runs today (UTC). None = over quota.
+
+    The count and the insert are one statement, so there's no gap between checking and inserting.
+    ponytail: two truly simultaneous requests can still both pass (each counts before the other
+    commits); an advisory lock per user would make it exact if the quota ever guards real money.
+    """
     async with engine.begin() as conn:
         return (await conn.execute(text(
-            "INSERT INTO agent_runs (user_id, goal) VALUES (:uid, :goal) RETURNING id"
-        ), {"uid": user_id, "goal": goal})).scalar_one()
+            "INSERT INTO agent_runs (user_id, goal) "
+            "SELECT :uid, :goal WHERE ("
+            "  SELECT count(*) FROM agent_runs WHERE user_id = :uid "
+            "  AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
+            ") < :limit "
+            "RETURNING id"
+        ), {"uid": user_id, "goal": goal, "limit": settings.agent_daily_runs})).scalar_one_or_none()
 
 
 async def _load(conn, run_id: UUID, user_id: str):
@@ -188,6 +199,9 @@ async def main(user_id: str, goal: str) -> None:
     """Manual test: run a goal, asking on the terminal whenever a write tool needs approval."""
     app = SimpleNamespace(state=SimpleNamespace(engine=make_engine(), genai=make_genai_client()))
     run_id = await create_run(app.state.engine, user_id, goal)
+    if run_id is None:
+        print(f"Daily limit of {settings.agent_daily_runs} runs reached")
+        return
     print("run", run_id)
     while True:
         last = None

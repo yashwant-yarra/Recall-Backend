@@ -1,0 +1,75 @@
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+
+from recall import auth
+from recall.agent import create_run, resolve_approval, run_agent
+from recall.ask import sse
+from recall.config import settings
+
+router = APIRouter()
+
+
+class RunRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=2000)
+
+
+class ApproveRequest(BaseModel):
+    approve: bool
+
+
+def stream(events):
+    """Wrap an async iterator of event dicts as an SSE response."""
+    async def body():
+        async for event in events:
+            yield sse(event["type"], event)
+    return StreamingResponse(body(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@router.post("/agent/runs")
+async def start_run(body: RunRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    # Anything that should fail with a real HTTP status must happen before the stream starts:
+    # once StreamingResponse begins, the 200 and headers are already sent.
+    run_id = await create_run(request.app.state.engine, user_id, body.goal)
+    if run_id is None:
+        raise HTTPException(status_code=429, detail=f"Daily limit of {settings.agent_daily_runs} agent runs reached")
+
+    async def events():
+        yield {"type": "run", "run_id": str(run_id)}
+        async for event in run_agent(request.app, run_id, user_id):
+            yield event
+
+    return stream(events())
+
+
+@router.post("/agent/runs/{run_id}/approve")
+async def approve(run_id: UUID, body: ApproveRequest, request: Request,
+                  user_id: str = Depends(auth.get_current_user_id)):
+    # resolve_approval only matches runs owned by user_id, so someone else's run_id looks like
+    # "nothing pending" (404) and reveals nothing about whether that run exists.
+    first = await resolve_approval(request.app, run_id, user_id, body.approve)
+    if first is None:
+        raise HTTPException(status_code=404, detail="No pending approval")
+
+    async def events():
+        yield first
+        if first["type"] == "error":
+            return
+        async for event in run_agent(request.app, run_id, user_id):
+            yield event
+
+    return stream(events())
+
+
+@router.get("/agent/runs")
+async def list_runs(request: Request, user_id: str = Depends(auth.get_current_user_id)):
+    async with request.app.state.engine.connect() as conn:
+        rows = (await conn.execute(text(
+            "SELECT id, goal, status, answer, error, created_at FROM agent_runs "
+            "WHERE user_id = :uid ORDER BY created_at DESC LIMIT 20"
+        ), {"uid": user_id})).all()
+    return {"runs": [{"run_id": str(r.id), "goal": r.goal, "status": r.status, "answer": r.answer,
+                      "error": r.error, "created_at": r.created_at.isoformat()} for r in rows]}
