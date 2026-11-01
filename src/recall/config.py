@@ -1,8 +1,12 @@
-from pydantic_settings import BaseSettings,SettingsConfigDict 
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     database_url: str
-    gcs_bucket: str
+    # GCS bucket naming rules: 3-63 chars, lowercase letters, digits, '-', '_', '.'. A bad value
+    # (e.g. from a mangled deploy command) now stops startup, so Cloud Run keeps the old revision.
+    gcs_bucket: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$")
     model_config = SettingsConfigDict(env_file=".env")
     db_echo: bool = False
     dev_user_id: str | None = None

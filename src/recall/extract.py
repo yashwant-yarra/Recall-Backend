@@ -23,5 +23,5 @@ def extract_text(data: bytes, mime_type: str) -> list[str]:
         doc = Document(io.BytesIO(data))
         return ["\n".join(p.text for p in doc.paragraphs)]
     elif mime_type == "text/plain":
-        return [data.decode("utf-8", errors="replace")]
+        return [data.decode("utf-8-sig", errors="replace")]  # -sig drops a leading BOM if present
     raise ValueError(f"Unsupported mime type: {mime_type}")
