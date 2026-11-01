@@ -4,16 +4,20 @@ import re
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from google.api_core.exceptions import PreconditionFailed
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from recall import auth
 from recall.db import PLAN_LIMIT, UTC_DAY_START
+from recall.extract import office_to_pdf
 from recall.storage import delete_object, sign_download_url, sign_upload_url
 
 from .config import settings
 
 logger = logging.getLogger(__name__)
+# LibreOffice is memory-heavy; allow one preview conversion per API instance.
+_preview_conversion = asyncio.Semaphore(1)
 
 # Allow-list: mime type -> (kind, extension). Anything not listed is rejected.
 ALLOWED_TYPES = {
@@ -121,17 +125,40 @@ async def _owned_file(request: Request, user_id: str, file_id: UUID):
     return row
 
 
+def presentation_preview(bucket, gcs_path: str, mime_type: str) -> str:
+    """Cache a PDF alongside the immutable original, including for existing uploads."""
+    preview_path = f"{gcs_path}.preview.pdf"
+    preview = bucket.blob(preview_path)
+    if not preview.exists():
+        pdf = office_to_pdf(bucket.blob(gcs_path).download_as_bytes(), mime_type)
+        try:
+            preview.upload_from_string(pdf, content_type="application/pdf", if_generation_match=0)
+        except PreconditionFailed:
+            pass  # another preview request created the same PDF first
+    return preview_path
+
+
 @router.get("/files/{file_id}/url")
 async def file_url(file_id: UUID, request: Request, user_id: str = Depends(auth.get_current_user_id)):
-    """A 5-minute link to view the original file in the browser (PDF viewer, audio player)."""
+    """A 5-minute preview link; PowerPoint slides are rendered as a cached PDF."""
     row = await _owned_file(request, user_id, file_id)
     if row.status == "pending":
         raise HTTPException(status_code=409, detail="This file hasn't finished uploading")
+    gcs_path, mime_type, filename = row.gcs_path, row.mime_type, row.display_name
+    if mime_type in ("application/vnd.ms-powerpoint",
+                     "application/vnd.openxmlformats-officedocument.presentationml.presentation"):
+        try:
+            async with _preview_conversion:
+                gcs_path = await asyncio.to_thread(presentation_preview, request.app.state.gcs_bucket, gcs_path, mime_type)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        mime_type = "application/pdf"
+        filename = f"{filename.rsplit('.', 1)[0]}.pdf" if filename else "slides.pdf"
     url = await asyncio.to_thread(
         sign_download_url, request.app.state.gcs_bucket, request.app.state.gcs_credentials,
-        row.gcs_path, row.mime_type, row.display_name,
+        gcs_path, mime_type, filename,
     )
-    return {"url": url, "mime_type": row.mime_type, "kind": row.kind, "name": row.display_name,
+    return {"url": url, "mime_type": mime_type, "kind": row.kind, "name": row.display_name,
             "expires_in": settings.download_url_ttl_seconds}
 
 
@@ -163,7 +190,8 @@ async def delete_file(file_id: UUID, request: Request, user_id: str = Depends(au
         raise HTTPException(status_code=404, detail="File not found")
     # The row goes first, so the file disappears for the user even if storage is briefly unreachable;
     # a leftover object is harmless (nothing points to it, and the bucket's soft delete expires it).
-    try:
-        await asyncio.to_thread(delete_object, request.app.state.gcs_bucket, gcs_path)
-    except Exception:
-        logger.exception("Deleted file %s, but removing %s from storage failed", file_id, gcs_path)
+    for object_path in (gcs_path, f"{gcs_path}.preview.pdf"):
+        try:
+            await asyncio.to_thread(delete_object, request.app.state.gcs_bucket, object_path)
+        except Exception:
+            logger.exception("Deleted file %s, but removing %s from storage failed", file_id, object_path)

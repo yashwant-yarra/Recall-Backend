@@ -124,7 +124,7 @@ Credentials are mounted at run time, never baked into the image.
 - Try the agent from the terminal: `uv run python -m recall.agent <user_id> "your goal"` (asks y/N for writes)
 - Call a tool directly: `uv run python -m recall.tools list_voice_notes <user_id> '{"limit": 5}'`
 
-Office extraction: DOC, PPT and PPTX require `libreoffice` on the worker's PATH, with Writer and Impress installed (included in the Docker image). They are converted to PDF in a private temporary directory, then extracted page by page or slide by slide. Conversion times out after 60 seconds; encrypted files must be unlocked first. DOCX uses python-docx directly. Office previews show extracted text; images and speaker notes are not indexed. Run `pytest tests/test_office_integration.py` with LibreOffice installed to check real DOC, PPT and PPTX conversions.
+Office extraction: DOC, PPT and PPTX require `libreoffice` on the worker's PATH, with Writer and Impress installed (included in the Docker image). They are converted to PDF in a private temporary directory, then extracted page by page or slide by slide. Conversion times out after 60 seconds; encrypted files must be unlocked first. DOCX uses python-docx directly. PowerPoint previews display a cached PDF of the slides, including existing uploads; other Office previews show extracted text. The first PowerPoint preview converts on demand, one conversion per API instance, and deleting the file also removes its cached preview. Images and speaker notes are not indexed. Run `pytest tests/test_office_integration.py` with LibreOffice installed to check real DOC, PPT and PPTX conversions.
 
 ## Deployment
 
