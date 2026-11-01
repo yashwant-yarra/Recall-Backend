@@ -23,7 +23,10 @@ GUARD = (
     "Only answer questions related to the subjects in the student's documents, including related follow-up questions "
     "and requests for more detail beyond the document. Use the current sources and conversation context to determine "
     "the subject, not a superficial shared word. If the question is unrelated, briefly say you can only help with "
-    "questions related to their documents; do not answer it or add a self-check question. "
+    "questions related to the user's documents; do not answer it, cite sources, or add a self-check question. "
+    "For an unrelated question in English, reply exactly: I can only help with questions related to your documents. "
+    "If the user comments on or corrects your own wording, briefly acknowledge and correct the wording; "
+    "do not give an unrelated lesson, cite a document, or add a study question. "
     "If there is not enough document context to determine relevance, ask the student to select a document or clarify. "
     "Only the current numbered sources are evidence; earlier assistant claims and citation numbers are not evidence. "
     "Answer in the same language as the latest user question. "
@@ -132,6 +135,25 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
         await conn.execute(
             text("INSERT INTO messages (chat_id, role, content) VALUES (:cid, 'user', :content)"),
             {"cid": chat_id, "content": body.question})
+
+    # Correct this known wording error directly, without treating the user's feedback as a study question.
+    if (re.search(r"\b(?:sentence|wording|phrasing|grammar|phrase)\b", body.question, re.I)
+            and re.search(r"\b(?:wrong|awkward|incorrect|mistake|error)\b", body.question, re.I)
+            and any(m.role == "assistant" and "I can only help with questions related to their documents" in m.content
+                    for m in history)):
+        correction = "You're right. I can only help with questions related to your documents."
+
+        async def corrected():
+            yield sse("chat", {"chat_id": str(chat_id)})
+            yield sse("sources", [])
+            yield sse("token", correction)
+            async with engine.begin() as conn:
+                await conn.execute(text("INSERT INTO messages (chat_id, role, content, citations) "
+                                        "VALUES (:cid, 'assistant', :content, CAST(:citations AS jsonb))"),
+                                   {"cid": chat_id, "content": correction, "citations": "[]"})
+            yield sse("done", {})
+
+        return StreamingResponse(corrected(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
     # A follow-up ("why?", "simpler please") says little on its own; the previous question helps
     # search find the same pages.

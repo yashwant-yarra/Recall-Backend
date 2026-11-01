@@ -81,6 +81,8 @@ def test_both_modes_require_document_relevance_and_allow_related_followups():
         assert "Only answer questions related to the subjects" in prompt
         assert "requests for more detail beyond the document" in prompt
         assert "do not answer it" in prompt
+        assert "I can only help with questions related to your documents." in prompt
+        assert "If the user comments on or corrects your own wording" in prompt
 
 
 def test_explain_distinguishes_requested_background_from_missing_document_facts():
@@ -133,3 +135,33 @@ def test_stream_removes_split_false_refusal_and_saves_clean_answer(monkeypatch):
     assert "I don't know" not in events
     assert "Beyond your document: Extra detail." in events
     assert execute.await_args_list[-1].args[1]["content"] == "Beyond your document: Extra detail."
+
+
+def test_wording_feedback_corrects_previous_refusal_without_sources(monkeypatch):
+    chat_id = uuid4()
+    execute = AsyncMock(side_effect=[
+        SimpleNamespace(scalar_one=lambda: False),
+        SimpleNamespace(first=lambda: SimpleNamespace(id=chat_id, file_id=None)),
+        SimpleNamespace(all=lambda: [SimpleNamespace(role="assistant", content="I can only help with questions related to their documents.")]),
+        None, None,
+    ])
+
+    class Engine:
+        @asynccontextmanager
+        async def begin(self):
+            yield SimpleNamespace(execute=execute)
+
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(engine=Engine())))
+    search = AsyncMock()
+    monkeypatch.setattr(ask, "hybrid_search", search)
+
+    async def run():
+        response = await ask.ask(ask.AskRequest(question="this sentence formation seems wrong", chat_id=chat_id, mode="explain"), request, "me")
+        return "".join([event async for event in response.body_iterator])
+
+    events = asyncio.run(run())
+    assert "your documents" in events
+    assert "event: sources\ndata: []" in events
+    assert "event: done" in events
+    assert execute.await_args_list[-1].args[1]["citations"] == "[]"
+    search.assert_not_awaited()
