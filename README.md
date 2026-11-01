@@ -6,7 +6,9 @@ A GenAI knowledge backend with three connected features over one shared index:
 2. **Voice notes:** upload a recording; it's transcribed, summarized into action items and topics, and indexed next to your documents.
 3. **Agent:** give it a goal; a hand-written function-calling loop looks things up with tools, and asks for your approval before it creates a task or saves a draft.
 
-**Status:** all three work end to end on Cloud Run, behind Firebase Auth. Backend only; there's no frontend.
+A **Pro subscription** (Razorpay) raises each user's daily limits.
+
+**Status:** all of it works end to end on Cloud Run, behind Firebase Auth. Backend only; there's no frontend.
 
 ## How it works
 
@@ -37,15 +39,17 @@ Every `/api/v1` route needs `Authorization: Bearer <Firebase ID token>`; every q
 | --- | --- | --- |
 | `GET` | `/health` | Liveness, no DB. |
 | `GET` | `/health/db` | `SELECT 1` against Neon; 503 if unreachable. |
-| `GET` | `/me` | The current user's ID. |
+| `GET` | `/me` | The current user's ID and plan (`free` / `pro`). |
 | `POST` | `/api/v1/files` | `{mime_type, size_bytes}` → `{file_id, upload_url, upload_headers}`. PDF, DOCX, TXT and audio (webm, mp3, m4a, wav); max 25 MiB. |
 | `GET` | `/api/v1/search?q=` | Top 8 chunks from hybrid search, each with `kind` (`doc` / `audio`) and `page`. |
 | `POST` | `/api/v1/ask` | `{question, chat_id?}` → SSE: `chat`, `sources`, `token`…, `done`. Chat and messages are saved. |
 | `POST` | `/api/v1/agent/runs` | `{goal}` → SSE: `run`, `step`…, then `answer`, `approval_needed` or `error`. |
 | `POST` | `/api/v1/agent/runs/{id}/approve` | `{approve: true\|false}` → runs or rejects the pending write, then streams the rest of the run. 404 if nothing is pending. |
 | `GET` | `/api/v1/agent/runs` | The user's 20 most recent runs. |
+| `POST` | `/api/v1/billing/checkout` | Creates a Razorpay subscription for Pro → `{subscription_id, url}` (Razorpay-hosted payment page). |
+| `POST` | `/api/v1/billing/webhook` | Called by Razorpay, not users: no login, but the HMAC signature must match. |
 
-Daily limits per user (UTC day, all configurable): 50 uploads, 200 questions, 20 agent runs. Over the limit → 429.
+Daily limits per user (UTC day, all configurable): free 50 uploads, 200 questions, 20 agent runs; Pro 500, 2,000, 200. Over the limit → 429.
 
 ## Design decisions
 
@@ -69,6 +73,12 @@ Daily limits per user (UTC day, all configurable): 50 uploads, 200 questions, 20
 - **Identity never passes through the model.** Tools get `user_id` from the server, never from the model's arguments, so injected text in a document can't make the agent read another user's data. Someone else's file looks like "No such file".
 - **Errors the model can fix are results, not crashes.** A bad date or unknown file returns `{"error": …}` and the model corrects itself; system failures fail the run.
 
+**Billing (Razorpay)**
+- **The webhook is the only thing that changes a plan.** The payment page's redirect proves nothing (anyone can open a success URL); a request signed with the webhook secret does. The signature is HMAC-SHA256 over the raw body, compared in constant time.
+- **At-least-once, out of order.** Each event ID is recorded in `payment_events` in the same transaction as the plan change, so a redelivery is skipped. Events can arrive out of order, so the handler fetches the subscription's current state instead of trusting the event's snapshot.
+- **Only the current subscription can downgrade.** A user's abandoned, unpaid link being cancelled can't take Pro away from the subscription they did pay for.
+- **No SDK.** Two REST calls with `httpx` (async) and a stdlib `hmac` check. Stripe was built first and swapped out (it's invite-only in India); only `billing.py` and config changed, because "who is Pro" lives in `users.plan`.
+
 **Security and operations**
 - **Firebase Auth.** The API verifies ID tokens with `google-auth` (signature, expiry, issuer, audience = this project) and creates the `users` row on first sight. No token → 401; production has no development bypass.
 - **Least privilege.** Each service has its own service account, with grants scoped to one resource. The API can create objects but not read them; the worker can read but not write.
@@ -78,7 +88,7 @@ Daily limits per user (UTC day, all configurable): 50 uploads, 200 questions, 20
 
 ## Stack
 
-Python 3.14 · FastAPI · SQLAlchemy 2 async + psycopg 3 · Neon Postgres + pgvector · Google Cloud Storage · Eventarc · Cloud Run · Vertex AI (`google-genai`: Gemini 3.5, Gemini Transcribe, gemini-embedding-001) · Firebase Auth · Alembic · uv
+Python 3.14 · FastAPI · SQLAlchemy 2 async + psycopg 3 · Neon Postgres + pgvector · Google Cloud Storage · Eventarc · Cloud Run · Vertex AI (`google-genai`: Gemini 3.5, Gemini Transcribe, gemini-embedding-001) · Firebase Auth · Razorpay · Alembic · uv
 
 ## Run locally
 
@@ -142,5 +152,6 @@ The PDF-only run on 2026-10-31 gave the same retrieval (16/20, 18/20) and 19/20 
 3. ~~Voice notes~~: Gemini transcription, structured summary + action items, transcripts in the shared index
 4. ~~Agent~~: hand-written function-calling loop, approval for write tools, daily quota
 5. ~~Backend polish~~: Firebase Auth, daily limits, cleanup command, config validation
+6. ~~Billing~~: Razorpay Pro subscription, signed idempotent webhooks, plan-aware limits
 
 Next ideas: a frontend (Next.js) with in-browser recording, a reranker or query rewriting for paraphrase retrieval, a larger eval corpus, scheduled cleanup (Cloud Scheduler), CI/CD with Workload Identity Federation.
