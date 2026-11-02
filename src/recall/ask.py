@@ -116,6 +116,7 @@ class AskRequest(BaseModel):
     chat_id: UUID | None = None
     file_id: UUID | None = None  # ask about one document; only used when starting a chat
     mode: Literal["answer", "explain"] = "answer"
+    language: Language | None = None  # None: answer in the question's language
     web_search: bool = False  # Explain mode only: let the tutor add Google Search background
 
 
@@ -204,7 +205,7 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
         types.Part(text=f"Numbered sources for the latest question:\n{sources or 'No matching sources.'}"),
         types.Part(text=f"Latest user question:\n{body.question}"),
     ]))
-    system = EXPLAIN_SYSTEM if body.mode == "explain" else ANSWER_SYSTEM
+    system = (EXPLAIN_SYSTEM if body.mode == "explain" else ANSWER_SYSTEM) + language_instruction(body.language)
     # Quick answer is "only from your document", so web search is Explain-only; and with no matching
     # documents there is no subject to stay related to.
     use_web = body.web_search and body.mode == "explain" and bool(hits)
