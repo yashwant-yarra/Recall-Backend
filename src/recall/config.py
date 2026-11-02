@@ -73,11 +73,11 @@ class Settings(BaseSettings):
     razorpay_key_id: str | None = None  # rzp_test_... (identifies the account; not secret)
     razorpay_key_secret: str | None = None  # Secret Manager in production
     razorpay_webhook_secret: str | None = None  # chosen when creating the webhook; Secret Manager
-    # Two monthly Razorpay plans. razorpay_plan_id is the one that already exists (RAZORPAY_PLAN_ID), so it
-    # is now the Ultra plan and current subscribers keep what they pay for; razorpay_pro_plan_id is the new
-    # middle plan (create it in the Razorpay dashboard). Unset = that tier cannot be bought yet (503).
-    razorpay_plan_id: str | None = None  # plan_... of the monthly Ultra plan
-    razorpay_pro_plan_id: str | None = None  # plan_... of the monthly Pro plan
+    # Two monthly Razorpay plans, one per paid tier. The original plan (the one existing subscribers pay for)
+    # is the Pro plan; Ultra is sold through a newer, higher-priced plan. Unset = that tier cannot be bought
+    # yet (503). Both are plain env vars, not secrets.
+    razorpay_plan_id: str | None = None  # RAZORPAY_PLAN_ID: plan_... of the monthly Ultra plan
+    razorpay_pro_plan_id: str | None = None  # RAZORPAY_PRO_PLAN_ID: plan_... of the monthly Pro plan
     razorpay_total_count: int = 12  # billing cycles per subscription (Razorpay requires a number)
     razorpay_api_url: str = "https://api.razorpay.com/v1"
     # Browser origins allowed to call the API (exact scheme + host + port, no trailing slash).

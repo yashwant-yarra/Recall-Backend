@@ -19,19 +19,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # Three tiers: free, pro (new, in the middle) and ultra (the limits 'pro' used to mean). Everyone who
-    # is 'pro' today is paying for those old limits through the existing Razorpay plan, so they become
-    # 'ultra' and lose nothing. The constraint goes first so the new value is allowed.
+    # Three tiers: free, pro and ultra. Existing 'pro' users stay 'pro': they pay for the original Razorpay
+    # plan, which is now the Pro plan, so their plan value already says what they are paying for. Only the
+    # constraint changes, to allow the new 'ultra' value (sold through a new Razorpay plan).
     op.execute("ALTER TABLE users DROP CONSTRAINT users_plan_check")
-    op.execute("UPDATE users SET plan = 'ultra' WHERE plan = 'pro'")
     op.execute("ALTER TABLE users ADD CONSTRAINT users_plan_check CHECK (plan IN ('free', 'pro', 'ultra'))")
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    # Ultra becomes pro again (the old, single paid tier); the new middle pro would lose its meaning,
-    # so it becomes free. Order matters: rewrite the values, then tighten the constraint.
-    op.execute("UPDATE users SET plan = 'free' WHERE plan = 'pro'")
+    # There is no 'ultra' before this revision; those users fall back to 'pro', the highest tier that existed.
     op.execute("UPDATE users SET plan = 'pro' WHERE plan = 'ultra'")
     op.execute("ALTER TABLE users DROP CONSTRAINT users_plan_check")
     op.execute("ALTER TABLE users ADD CONSTRAINT users_plan_check CHECK (plan IN ('free', 'pro'))")

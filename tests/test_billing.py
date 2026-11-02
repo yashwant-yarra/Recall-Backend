@@ -32,16 +32,16 @@ def test_plan_for_subscription(monkeypatch):
     monkeypatch.setattr(settings, "razorpay_plan_id", "plan_ultra")
     assert billing.plan_for_subscription("active", "plan_pro") == "pro"
     assert billing.plan_for_subscription("active", "plan_ultra") == "ultra"
-    assert billing.plan_for_subscription("active", "plan_legacy") == "ultra"  # the plan existing subscribers already pay for
-    assert billing.plan_for_subscription("active", None) == "ultra"
+    assert billing.plan_for_subscription("active", "plan_unknown") == "pro"  # never the higher tier by accident
+    assert billing.plan_for_subscription("active", None) == "pro"
     for status in ("created", "authenticated", "pending", "halted", "cancelled", "completed", "expired", None):
-        assert billing.plan_for_subscription(status, "plan_pro") == "free"
+        assert billing.plan_for_subscription(status, "plan_ultra") == "free"
 
 
-def test_pro_plan_unset_means_every_plan_is_ultra(monkeypatch):
-    monkeypatch.setattr(settings, "razorpay_pro_plan_id", None)
-    assert billing.tier_for_plan_id(None) == "ultra"  # never matches an unset id by accident
-    assert billing.plan_id_for("pro") is None
+def test_ultra_plan_unset_means_nothing_is_ultra(monkeypatch):
+    monkeypatch.setattr(settings, "razorpay_plan_id", None)
+    assert billing.tier_for_plan_id(None) == "pro"  # an unset id never matches by accident
+    assert billing.plan_id_for("ultra") is None
 
 
 def test_valid_signature():

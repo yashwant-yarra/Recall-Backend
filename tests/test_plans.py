@@ -66,7 +66,7 @@ def test_every_limit_steps_up_from_free_to_pro_to_ultra():
 
 def test_ultra_keeps_the_limits_pro_used_to_have():
     rows = {r["key"]: r for r in plan_limits()}
-    # Existing subscribers become Ultra, so these must stay what they paid for.
+    # Ultra is the former Pro numbers, so these must not drift.
     assert (rows["questions"]["ultra"], rows["uploads"]["ultra"], rows["agent_runs"]["ultra"]) == (500, 50, 50)
     assert (rows["live_minutes"]["ultra"], rows["web_searches"]["ultra"], rows["max_file_mb"]["ultra"]) == (60, 100, 25)
 

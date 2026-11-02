@@ -31,14 +31,14 @@ PAID_STATUSES = {"active"}
 
 
 def plan_id_for(tier: str) -> str | None:
-    """The Razorpay plan that sells a tier. razorpay_plan_id existed before tiers, so it is Ultra."""
+    """The Razorpay plan that sells a tier: RAZORPAY_PRO_PLAN_ID for Pro, RAZORPAY_PLAN_ID for Ultra."""
     return settings.razorpay_pro_plan_id if tier == "pro" else settings.razorpay_plan_id
 
 
 def tier_for_plan_id(plan_id: str | None) -> str:
-    """Which tier a subscription buys, from its Razorpay plan. Anything but the Pro plan is Ultra: that is
-    the plan existing subscribers already pay for."""
-    return "pro" if settings.razorpay_pro_plan_id and plan_id == settings.razorpay_pro_plan_id else "ultra"
+    """Which tier a subscription buys, from its Razorpay plan. Only the Ultra plan gives Ultra; anything
+    else, including an unknown plan, gives Pro, so a mix-up can never hand out the higher tier by accident."""
+    return "ultra" if settings.razorpay_plan_id and plan_id == settings.razorpay_plan_id else "pro"
 
 
 def plan_for_subscription(status: str | None, plan_id: str | None) -> str:
