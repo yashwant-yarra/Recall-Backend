@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     # reviewers. Everyone else must verify their email to use the API (set VERIFICATION_EXEMPT_EMAILS to change).
     verification_exempt_emails: str = "test@genai.dev"
     trial_days: int = 7  # one free trial per account, opt-in, no card; it gives Pro (the middle tier)
+    # Days after a pass or trial ends before recall.prune deletes the oldest files over the Free limits.
+    storage_grace_days: int = 90
     # Files kept at once (new uploads only; nothing already stored is deleted). Ultra has no cap.
     free_max_files: int = 5
     pro_max_files: int = 50

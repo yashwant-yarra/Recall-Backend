@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 _preview_conversion = asyncio.Semaphore(1)
 PREVIEW_SUFFIX = ".preview-v2.pdf"  # invalidate previews rendered before Office-compatible fonts were installed
 
+
+def object_paths(gcs_path: str) -> tuple[str, ...]:
+    """Every storage object that belongs to a file: the upload and its previews (old and current)."""
+    return (gcs_path, f"{gcs_path}.preview.pdf", f"{gcs_path}{PREVIEW_SUFFIX}")
+
 # Allow-list: mime type -> (kind, extension). Anything not listed is rejected.
 ALLOWED_TYPES = {
     "application/pdf": ("doc", "pdf"),
@@ -230,7 +235,7 @@ async def delete_file(file_id: UUID, request: Request, user_id: str = Depends(au
         raise HTTPException(status_code=404, detail="File not found")
     # The row goes first, so the file disappears for the user even if storage is briefly unreachable;
     # a leftover object is harmless (nothing points to it, and the bucket's soft delete expires it).
-    for object_path in (gcs_path, f"{gcs_path}.preview.pdf", f"{gcs_path}{PREVIEW_SUFFIX}"):
+    for object_path in object_paths(gcs_path):
         try:
             await asyncio.to_thread(delete_object, request.app.state.gcs_bucket, object_path)
         except Exception:

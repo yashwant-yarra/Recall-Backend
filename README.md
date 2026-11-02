@@ -101,6 +101,7 @@ Weekly limits per user (resetting Monday 00:00 UTC, all configurable; setting na
 - **Fail fast on bad config.** The bucket name is validated at startup, so a mangled deploy command fails the deploy instead of breaking uploads.
 - **Migrations by hand.** Alembic with raw SQL (autogenerate handles `halfvec`, HNSW and `tsvector` badly), run before a deploy, never at startup.
 - **Cleanup.** `python -m recall.cleanup` fails uploads never completed after a day and agent runs abandoned mid-stream; `--dry-run` shows the counts and rolls back.
+- **Storage grace period.** When a pass or trial ends, nothing is deleted; uploads are refused while over the Free limits. `python -m recall.prune` lists Free users still over the limits 90 days (`STORAGE_GRACE_DAYS`) after access ended and the oldest files it would delete, keeping the newest that fit; `--apply` deletes them (rows first, then objects), re-checking in the same statement that the user is still on Free. `/me` returns `storage.delete_after` so the UI warns in advance.
 
 ## Stack
 
