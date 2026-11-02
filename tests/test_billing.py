@@ -72,26 +72,34 @@ def test_webhook_wrong_secret_rejected(client):
 
 def test_webhook_tampered_body_rejected(client):
     # Signed for one body, sent with another: someone edited the event in transit.
-    original = json.dumps({"type": "PAYMENT_LINK_EVENT", "data": {"link_status": "EXPIRED"}})
-    forged = original.replace("EXPIRED", "PAID")
+    original = json.dumps({"type": "PAYMENT_FAILED_WEBHOOK", "data": {"payment": {"payment_status": "FAILED"}}})
+    forged = original.replace("FAILED", "SUCCESS")
     assert client.post("/billing/webhook", content=forged, headers=headers(original)).status_code == 400
 
 
-def test_webhook_ignores_unpaid_links_without_touching_the_database(client):
-    # The test app has no engine: reaching the database would crash, so 200 proves it stopped early.
-    for status in ("ACTIVE", "PARTIALLY_PAID", "EXPIRED", "CANCELLED"):
-        body = json.dumps({"type": "PAYMENT_LINK_EVENT", "data": {"link_id": "l1", "link_status": status}})
+def test_webhook_ignores_other_events_without_calling_out(client):
+    # The test app has no engine and no Cashfree keys: calling either would fail, so 200 proves it stopped early.
+    for kind, status in (("PAYMENT_FAILED_WEBHOOK", "FAILED"), ("PAYMENT_USER_DROPPED_WEBHOOK", "USER_DROPPED"),
+                         ("PAYMENT_SUCCESS_WEBHOOK", "PENDING"), ("PAYMENT_LINK_EVENT", None)):
+        body = json.dumps({"type": kind, "data": {"order": {"order_id": "o1"}, "payment": {"payment_status": status}}})
         r = client.post("/billing/webhook", content=body, headers=headers(body))
         assert r.status_code == 200 and r.json()["status"] == "ignored"
-    other = json.dumps({"type": "PAYMENT_SUCCESS_WEBHOOK", "data": {}})
-    assert client.post("/billing/webhook", content=other, headers=headers(other)).json()["status"] == "ignored"
 
 
-def test_webhook_ignores_paid_link_without_valid_notes(client):
-    for notes in ({}, {"user_id": "u1"}, {"user_id": "u1", "tier": "gold"}, {"tier": "pro"}):
-        body = json.dumps({"type": "PAYMENT_LINK_EVENT",
-                           "data": {"link_id": "l1", "link_status": "PAID", "link_notes": notes}})
-        assert client.post("/billing/webhook", content=body, headers=headers(body)).json()["status"] == "ignored"
+def test_pass_from_order():
+    # The webhook trusts only the order as Cashfree reports it: paid, with the tags this server set.
+    paid = {"order_status": "PAID", "order_tags": {"user_id": "u1", "tier": "ultra"}}
+    assert billing.pass_from_order(paid) == ("u1", "ultra")
+    assert billing.pass_from_order({**paid, "order_status": "ACTIVE"}) is None  # not paid (yet)
+    for tags in (None, {}, {"user_id": "u1"}, {"user_id": "u1", "tier": "gold"}, {"tier": "pro"}):
+        assert billing.pass_from_order({"order_status": "PAID", "order_tags": tags}) is None
+
+
+def test_customer_id_is_stable_and_alphanumeric():
+    # Cashfree allows only letters and digits, 3-50 characters; user IDs can hold '-' (dev-user).
+    a = billing.customer_id_for("dev-user")
+    assert a == billing.customer_id_for("dev-user") and a.isalnum() and 3 <= len(a) <= 50
+    assert a != billing.customer_id_for("other-user")
 
 
 def test_checkout_validates_phone(client, monkeypatch):

@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     cashfree_client_secret: str | None = None  # Secret Manager in production; also signs the webhooks
     # Where Cashfree sends the paid event: https://<api>/api/v1/billing/webhook. Required to sell.
     cashfree_notify_url: str | None = None
+    # Where Cashfree sends the user back if the checkout popup cannot open (some in-app browsers). Optional.
+    cashfree_return_url: str | None = None
     cashfree_api_url: str = "https://api.cashfree.com/pg"  # sandbox: https://sandbox.cashfree.com/pg
     cashfree_api_version: str = "2025-01-01"
     pro_price_inr: int = 699  # keep in step with PRICES in the UI's src/lib/legal.ts

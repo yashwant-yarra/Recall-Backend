@@ -6,7 +6,7 @@ A GenAI knowledge backend with three connected features over one shared index:
 2. **Voice notes:** upload a recording; it's transcribed, summarized into action items and topics, and indexed next to your documents.
 3. **Agent:** give it a goal; a hand-written function-calling loop looks things up with tools, and asks for your approval before it creates a task or saves a draft.
 
-**Pro and Ultra passes** (Cashfree payment links, 30 days each) raise each user's weekly limits.
+**Pro and Ultra passes** (Cashfree, 30 days each, paid in a checkout popup) raise each user's weekly limits.
 
 **Status:** all of it works end to end on Cloud Run, behind Firebase Auth. Backend only; there's no frontend.
 
@@ -54,7 +54,7 @@ Every `/api/v1` route needs `Authorization: Bearer <Firebase ID token>`; every q
 | `POST` | `/api/v1/agent/runs` | `{goal}` → SSE: `run`, `step`…, then `answer`, `approval_needed` or `error`. |
 | `POST` | `/api/v1/agent/runs/{id}/approve` | `{approve: true\|false}` → runs or rejects the pending write, then streams the rest of the run. 404 if nothing is pending. |
 | `GET` | `/api/v1/agent/runs` | The user's 20 most recent runs. |
-| `POST` | `/api/v1/billing/checkout` | `{tier, phone}` → creates a Cashfree payment link for a 30-day pass → `{link_id, url}` (Cashfree-hosted payment page). |
+| `POST` | `/api/v1/billing/checkout` | `{tier, phone}` → creates a Cashfree order for a 30-day pass → `{order_id, payment_session_id, mode}`; the UI opens Cashfree checkout as a popup on the page. |
 | `POST` | `/api/v1/billing/webhook` | Called by Cashfree, not users: no login, but the HMAC signature must match. |
 
 Weekly limits per user (resetting Monday 00:00 UTC, all configurable; setting names keep their `DAILY_` prefix): Free 6 uploads, 30 questions, 4 quizzes, no agent runs; Pro 30 uploads, 200 questions, 10 quizzes, 10 agent runs; Ultra 80 uploads, 600 questions, 30 quizzes, 40 agent runs. Over the limit → 429.
@@ -88,11 +88,12 @@ Weekly limits per user (resetting Monday 00:00 UTC, all configurable; setting na
 - **Identity never passes through the model.** Tools get `user_id` from the server, never from the model's arguments, so injected text in a document can't make the agent read another user's data. Someone else's file looks like "No such file".
 - **Errors the model can fix are results, not crashes.** A bad date or unknown file returns `{"error": …}` and the model corrects itself; system failures fail the run.
 
-**Billing (Cashfree payment links)**
+**Billing (Cashfree)**
 - **The webhook is the only thing that changes a plan.** The payment page's redirect proves nothing (anyone can open a success URL); a request signed with the client secret does. The signature is base64 HMAC-SHA256 over the timestamp header plus the raw body, compared in constant time.
-- **Prepaid passes, nothing renews.** A paid link adds 30 days to `users.paid_until`; the tier counts while that is in the future (one SQL expression, `db.TIER`). No cancel, no renewal state, no out-of-order subscription events. Buying again extends the pass.
-- **At-least-once, replay-safe.** A link is paid once, so its ID goes into `payment_events` in the same transaction as the grant; a redelivered or replayed event is skipped. A payment never lowers a running tier.
-- **No SDK.** One REST call with `httpx` (async) and a stdlib `hmac` check. Stripe was built first and swapped out (invite-only in India), then Razorpay subscriptions, then Cashfree passes; only `billing.py` and config changed, because "who is Pro" lives in `users.plan`.
+- **Prepaid passes, nothing renews.** A paid order adds 30 days to `users.paid_until`; the tier counts while that is in the future (one SQL expression, `db.TIER`). No cancel, no renewal state, no out-of-order subscription events. Buying again extends the pass.
+- **At-least-once, replay-safe.** An order is paid once, so its ID goes into `payment_events` in the same transaction as the grant; a redelivered or replayed event is skipped. A payment never lowers a running tier.
+- **Fetch, don't trust the event.** The webhook re-reads the order from Cashfree: its `order_status` must be `PAID`, and `user_id`/tier come from the tags this server set.
+- **No server SDK.** Two REST calls (create and fetch an order) with `httpx` (async) and a stdlib `hmac` check. Stripe was built first and swapped out (invite-only in India), then Razorpay subscriptions, then Cashfree passes; only `billing.py` and config changed, because "who is Pro" lives in `users.plan`.
 
 **Security and operations**
 - **Firebase Auth.** The API verifies ID tokens with `google-auth` (signature, expiry, issuer, audience = this project) and creates the `users` row on first sight. No token → 401; production has no development bypass.

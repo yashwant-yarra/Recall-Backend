@@ -1,14 +1,14 @@
-"""Cashfree billing: Pro and Ultra are prepaid passes, bought through payment links.
+"""Cashfree billing: Pro and Ultra are prepaid passes, bought through Cashfree orders.
 
-Flow: POST /billing/checkout {tier, phone} creates a Cashfree payment link for that tier's price and
-returns its URL (card and UPI details never touch this server). When the link is paid, Cashfree calls
-POST /billing/webhook; that is the only place a pass is granted. Each purchase adds pass_days to
-users.paid_until, and the tier counts while paid_until is in the future (db.TIER). Nothing renews, so
-there is nothing to cancel: the user buys again to extend. The free trial (POST /billing/trial) needs no
-payment and lives in users.trial_ends_at.
+Flow: POST /billing/checkout {tier, phone} creates a Cashfree order for that tier's price and returns its
+payment_session_id; the UI opens Cashfree's checkout as a popup over the page with it (card and UPI
+details never touch this server). When the payment succeeds, Cashfree calls POST /billing/webhook; that
+is the only place a pass is granted. Each purchase adds pass_days to users.paid_until, and the tier counts
+while paid_until is in the future (db.TIER). Nothing renews, so there is nothing to cancel: the user buys
+again to extend. The free trial (POST /billing/trial) needs no payment and lives in users.trial_ends_at.
 
-No Cashfree SDK: the API is one call (create a link), made with httpx (async), and the webhook signature
-is a plain HMAC-SHA256, checked with the standard library.
+No Cashfree SDK on the server: two calls (create and fetch an order), made with httpx (async), and the
+webhook signature is a plain HMAC-SHA256, checked with the standard library.
 """
 import base64
 import hashlib
@@ -36,9 +36,24 @@ def price_for(tier: str) -> int:
     return settings.ultra_price_inr if tier == "ultra" else settings.pro_price_inr
 
 
+def customer_id_for(user_id: str) -> str:
+    """Cashfree's customer_id allows only letters and digits (3-50). A hash of the user ID always fits and
+    stays the same per user, so Cashfree groups one user's payments together."""
+    return "u" + hashlib.sha256(user_id.encode()).hexdigest()[:40]
+
+
+def pass_from_order(order: dict) -> tuple[str, str] | None:
+    """(user_id, tier) for an order Cashfree reports as PAID with the tags this server set; otherwise None."""
+    tags = order.get("order_tags") or {}
+    user_id, tier = tags.get("user_id"), tags.get("tier")
+    if order.get("order_status") != "PAID" or not user_id or tier not in ("pro", "ultra"):
+        return None
+    return user_id, tier
+
+
 class CheckoutRequest(BaseModel):
     tier: Literal["pro", "ultra"]
-    # Cashfree requires a customer phone on every link: a 10-digit Indian mobile number, digits only.
+    # Cashfree requires a customer phone on every order: a 10-digit Indian mobile number, digits only.
     phone: str = Field(pattern=r"^[6-9]\d{9}$")
 
 
@@ -80,18 +95,25 @@ async def checkout(body: CheckoutRequest, request: Request, user_id: str = Depen
         ends = row.paid_until.date().isoformat()
         raise HTTPException(status_code=409, detail=f"You have Ultra until {ends}. Pro can be bought after that.")
 
-    # user_id and tier go in the link's notes, set by this server. Webhooks are signed, so notes in a
-    # verified event can be trusted to say who paid and for what. The link ID is also the idempotency key.
-    link = await _cashfree("POST", "/links", json={
-        "link_id": f"recall_{uuid.uuid4().hex}",
-        "link_amount": price_for(body.tier),
-        "link_currency": "INR",
-        "link_purpose": f"Recall {body.tier.capitalize()}, {settings.pass_days} days",
-        "customer_details": {"customer_phone": body.phone},
-        "link_notes": {"user_id": user_id, "tier": body.tier},
-        "link_meta": {"notify_url": settings.cashfree_notify_url},
+    # user_id and tier go in the order's tags, set by this server. The webhook reads them back from
+    # Cashfree's copy of the order, so they can be trusted to say who paid and for what. The order ID is
+    # also the idempotency key.
+    meta = {"notify_url": settings.cashfree_notify_url}
+    if settings.cashfree_return_url:
+        # Used only when the popup can't open (some in-app browsers) and Cashfree redirects instead.
+        meta["return_url"] = settings.cashfree_return_url
+    order = await _cashfree("POST", "/orders", json={
+        "order_id": f"recall_{uuid.uuid4().hex}",
+        "order_amount": price_for(body.tier),
+        "order_currency": "INR",
+        "order_note": f"Recall {body.tier.capitalize()}, {settings.pass_days} days",
+        "customer_details": {"customer_id": customer_id_for(user_id), "customer_phone": body.phone},
+        "order_tags": {"user_id": user_id, "tier": body.tier},
+        "order_meta": meta,
     })
-    return {"link_id": link["link_id"], "url": link["link_url"]}
+    # mode tells the UI's Cashfree script which environment the session belongs to.
+    mode = "sandbox" if "sandbox" in settings.cashfree_api_url else "production"
+    return {"order_id": order["order_id"], "payment_session_id": order["payment_session_id"], "mode": mode}
 
 
 @router.post("/billing/trial")
@@ -127,25 +149,30 @@ async def webhook(request: Request):
 
     event = json.loads(body)
     data = event.get("data") or {}
-    if event.get("type") != "PAYMENT_LINK_EVENT" or data.get("link_status") != "PAID":
-        return {"status": "ignored"}  # partly paid, expired, cancelled, or another product's event
-    notes = data.get("link_notes") or {}
-    user_id, tier, link_id = notes.get("user_id"), notes.get("tier"), data.get("link_id")
-    if not user_id or tier not in ("pro", "ultra") or not link_id:
-        logger.warning("Cashfree paid link %s has no valid user_id/tier notes", link_id)
+    order_id = (data.get("order") or {}).get("order_id")
+    payment_status = (data.get("payment") or {}).get("payment_status")
+    if event.get("type") != "PAYMENT_SUCCESS_WEBHOOK" or payment_status != "SUCCESS" or not order_id:
+        return {"status": "ignored"}  # failed, dropped, pending, or another product's event
+
+    # Fetch the order instead of trusting the event's copy: older webhook versions send order_tags as null,
+    # and Cashfree's own order_status is the documented proof of payment.
+    paid = pass_from_order(await _cashfree("GET", f"/orders/{order_id}"))
+    if paid is None:
+        logger.warning("Cashfree order %s is not paid or has no valid user_id/tier tags", order_id)
         return {"status": "ignored"}
+    user_id, tier = paid
 
     async with request.app.state.engine.begin() as conn:
-        # Idempotency: a link is paid once, so its ID is the event's key. A redelivery (Cashfree delivers at
-        # least once) or a replayed request matches the primary key and is skipped. The pass is granted in
+        # Idempotency: an order is paid once, so its ID is the event's key. A redelivery (Cashfree delivers
+        # at least once) or a replayed request matches the primary key and is skipped. The pass is granted in
         # the same transaction, so a failure means Cashfree retries both.
         new = (await conn.execute(text(
-            "INSERT INTO payment_events (id, type) VALUES (:id, 'link.paid') ON CONFLICT (id) DO NOTHING RETURNING id"
-        ), {"id": link_id})).scalar_one_or_none()
+            "INSERT INTO payment_events (id, type) VALUES (:id, 'order.paid') ON CONFLICT (id) DO NOTHING RETURNING id"
+        ), {"id": order_id})).scalar_one_or_none()
         if new is None:
             return {"status": "duplicate"}
         # The days are added to whatever is left (GREATEST skips a NULL paid_until). A running Ultra pass
-        # stays Ultra even if this payment was for Pro (an old link paid late), so a payment never lowers
+        # stays Ultra even if this payment was for Pro (an old order paid late), so a payment never lowers
         # the tier. ponytail: Pro days left at an upgrade become Ultra days; prorate if that costs too much.
         await conn.execute(text(
             "UPDATE users SET "
@@ -153,5 +180,5 @@ async def webhook(request: Request):
             "paid_until = GREATEST(paid_until, now()) + make_interval(days => :days) "
             "WHERE id = :uid"
         ), {"tier": tier, "days": settings.pass_days, "uid": user_id})
-    logger.info("Cashfree link %s paid: %s pass for user %s", link_id, tier, user_id)
+    logger.info("Cashfree order %s paid: %s pass for user %s", order_id, tier, user_id)
     return {"status": "ok"}
