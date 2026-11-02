@@ -1,6 +1,6 @@
 [
   {
-    "origin": ["http://localhost:3000"],
+    "origin": ["https://recall.novatomica.studio", "https://recall-ui--genai-511308.asia-southeast1.hosted.app", "http://localhost:3000"],
     "method": ["PUT"],
     "responseHeader": ["Content-Type", "x-goog-content-length-range", "x-goog-if-generation-match"],
     "maxAgeSeconds": 3600
