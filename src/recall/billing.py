@@ -1,21 +1,26 @@
-"""Razorpay billing: monthly Pro and Ultra subscriptions that raise the daily limits.
+"""Cashfree billing: Pro and Ultra are prepaid passes, bought through payment links.
 
-Flow: POST /billing/checkout {tier} creates a Razorpay subscription on that tier's plan and returns its
-hosted payment link (card details never touch this server). After payment, Razorpay calls
-POST /billing/webhook; that is the only place users.plan changes, and the subscription's plan says
-which tier it buys. The free trial (POST /billing/trial) needs no payment and lives in users.trial_ends_at.
+Flow: POST /billing/checkout {tier, phone} creates a Cashfree payment link for that tier's price and
+returns its URL (card and UPI details never touch this server). When the link is paid, Cashfree calls
+POST /billing/webhook; that is the only place a pass is granted. Each purchase adds pass_days to
+users.paid_until, and the tier counts while paid_until is in the future (db.TIER). Nothing renews, so
+there is nothing to cancel: the user buys again to extend. The free trial (POST /billing/trial) needs no
+payment and lives in users.trial_ends_at.
 
-No Razorpay SDK: the REST API is two calls (create and fetch a subscription), made with httpx
-(async), and the webhook signature is a plain HMAC-SHA256, checked with the standard library.
+No Cashfree SDK: the API is one call (create a link), made with httpx (async), and the webhook signature
+is a plain HMAC-SHA256, checked with the standard library.
 """
+import base64
 import hashlib
 import hmac
+import json
 import logging
+import uuid
 from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from recall import auth
@@ -25,84 +30,73 @@ from recall.config import settings
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Subscription statuses that grant a paid tier. ponytail: 'pending' (a failed renewal Razorpay is still
-# retrying) drops to free immediately; add it here for a grace period.
-PAID_STATUSES = {"active"}
 
-
-def plan_id_for(tier: str) -> str | None:
-    """The Razorpay plan that sells a tier: RAZORPAY_PRO_PLAN_ID for Pro, RAZORPAY_PLAN_ID for Ultra."""
-    return settings.razorpay_pro_plan_id if tier == "pro" else settings.razorpay_plan_id
-
-
-def tier_for_plan_id(plan_id: str | None) -> str:
-    """Which tier a subscription buys, from its Razorpay plan. Only the Ultra plan gives Ultra; anything
-    else, including an unknown plan, gives Pro, so a mix-up can never hand out the higher tier by accident."""
-    return "ultra" if settings.razorpay_plan_id and plan_id == settings.razorpay_plan_id else "pro"
-
-
-def plan_for_subscription(status: str | None, plan_id: str | None) -> str:
-    """The users.plan a subscription gives: its tier while active, otherwise free."""
-    return tier_for_plan_id(plan_id) if status in PAID_STATUSES else "free"
+def price_for(tier: str) -> int:
+    """The price of one pass, in rupees."""
+    return settings.ultra_price_inr if tier == "ultra" else settings.pro_price_inr
 
 
 class CheckoutRequest(BaseModel):
     tier: Literal["pro", "ultra"]
+    # Cashfree requires a customer phone on every link: a 10-digit Indian mobile number, digits only.
+    phone: str = Field(pattern=r"^[6-9]\d{9}$")
 
 
-def valid_signature(body: bytes, signature: str | None, secret: str) -> bool:
-    """Razorpay signs the raw request body: hex(HMAC-SHA256(webhook_secret, body))."""
-    if not signature:
+def valid_signature(body: bytes, timestamp: str | None, signature: str | None, secret: str) -> bool:
+    """Cashfree signs the timestamp header plus the raw body: base64(HMAC-SHA256(client_secret, ts + body))."""
+    if not (timestamp and signature):
         return False
-    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)  # constant time: no timing leak
+    digest = hmac.new(secret.encode(), timestamp.encode() + body, hashlib.sha256).digest()
+    return hmac.compare_digest(base64.b64encode(digest).decode(), signature)  # constant time: no timing leak
 
 
 def _require_keys() -> tuple[str, str]:
-    if not (settings.razorpay_key_id and settings.razorpay_key_secret):
+    if not (settings.cashfree_client_id and settings.cashfree_client_secret and settings.cashfree_notify_url):
         raise HTTPException(status_code=503, detail="Billing is not configured")
-    return settings.razorpay_key_id, settings.razorpay_key_secret
+    return settings.cashfree_client_id, settings.cashfree_client_secret
 
 
-async def _razorpay(method: str, path: str, json: dict | None = None) -> dict:
-    """One Razorpay API call, authenticated with the key ID and secret (HTTP basic auth)."""
-    async with httpx.AsyncClient(base_url=settings.razorpay_api_url, auth=_require_keys(), timeout=15) as client:
+async def _cashfree(method: str, path: str, json: dict | None = None) -> dict:
+    """One Cashfree API call, authenticated with the client ID and secret headers."""
+    client_id, secret = _require_keys()
+    headers = {"x-client-id": client_id, "x-client-secret": secret, "x-api-version": settings.cashfree_api_version}
+    async with httpx.AsyncClient(base_url=settings.cashfree_api_url, headers=headers, timeout=15) as client:
         resp = await client.request(method, path, json=json)
     if resp.status_code >= 400:
-        logger.error("Razorpay %s %s failed: %s %s", method, path, resp.status_code, resp.text[:500])
+        logger.error("Cashfree %s %s failed: %s %s", method, path, resp.status_code, resp.text[:500])
         raise HTTPException(status_code=502, detail="Payment provider error")
     return resp.json()
 
 
 @router.post("/billing/checkout")
 async def checkout(body: CheckoutRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)):
-    """Start paying for a tier. Free can buy either; Pro can move up to Ultra (the webhook then cancels the
-    Pro subscription). Moving down is not offered: switch to Free first, then choose Pro."""
+    """Buy a pass. Buying your current tier extends it; Pro can move up to Ultra. Pro can't be bought while
+    an Ultra pass is running (it would only waste the money: the webhook keeps Ultra)."""
     _require_keys()
-    plan_id = plan_id_for(body.tier)
-    if not plan_id:
-        raise HTTPException(status_code=503, detail=f"{body.tier.capitalize()} is not available yet")
     async with request.app.state.engine.connect() as conn:
-        plan = (await conn.execute(text("SELECT plan FROM users WHERE id = :uid"), {"uid": user_id})).scalar_one()
-    if plan == body.tier:
-        raise HTTPException(status_code=409, detail=f"Already on {plan.capitalize()}")
-    if plan == "ultra":
-        raise HTTPException(status_code=409, detail="To move to Pro, switch to Free first, then choose Pro")
+        row = (await conn.execute(text(
+            "SELECT plan, paid_until, paid_until > now() AS active FROM users WHERE id = :uid"), {"uid": user_id})).one()
+    if row.active and row.plan == "ultra" and body.tier == "pro":
+        ends = row.paid_until.date().isoformat()
+        raise HTTPException(status_code=409, detail=f"You have Ultra until {ends}. Pro can be bought after that.")
 
-    # user_id goes in notes, set by this server. Webhooks are signed, so notes in a verified event
-    # can be trusted to say which user a subscription belongs to.
-    sub = await _razorpay("POST", "/subscriptions", json={
-        "plan_id": plan_id,
-        "total_count": settings.razorpay_total_count,
-        "quantity": 1,
-        "notes": {"user_id": user_id},
+    # user_id and tier go in the link's notes, set by this server. Webhooks are signed, so notes in a
+    # verified event can be trusted to say who paid and for what. The link ID is also the idempotency key.
+    link = await _cashfree("POST", "/links", json={
+        "link_id": f"recall_{uuid.uuid4().hex}",
+        "link_amount": price_for(body.tier),
+        "link_currency": "INR",
+        "link_purpose": f"Recall {body.tier.capitalize()}, {settings.pass_days} days",
+        "customer_details": {"customer_phone": body.phone},
+        "link_notes": {"user_id": user_id, "tier": body.tier},
+        "link_meta": {"notify_url": settings.cashfree_notify_url},
     })
-    return {"subscription_id": sub["id"], "url": sub["short_url"]}
+    return {"link_id": link["link_id"], "url": link["link_url"]}
 
 
 @router.post("/billing/trial")
 async def start_trial(request: Request, who: dict = Depends(auth.identity_from_request)):
-    """Start the account's one free trial (Pro, the middle tier). Works without Razorpay (no card), so no
+    """Start the account's one free trial (Pro, the middle tier). Works without Cashfree (no card), so no
     keys needed. The email must be verified and not a throwaway address (abuse.trial_refusal). One
     statement checks and sets: only a free account that never had a trial matches, so a double click or a
     second attempt matches nothing."""
@@ -120,98 +114,44 @@ async def start_trial(request: Request, who: dict = Depends(auth.identity_from_r
     return {"ends_at": ends_at.isoformat()}
 
 
-@router.post("/billing/cancel")
-async def cancel(request: Request, user_id: str = Depends(auth.get_current_user_id)):
-    """Stop Pro from renewing: the user keeps Pro until the month they paid for ends. users.plan is NOT
-    changed here: when the period ends Razorpay sends subscription.cancelled and the webhook (still the
-    only place the plan changes) moves the user to free."""
-    _require_keys()
-    sid = await _paid_subscription_id(request, user_id)
-    # cancel_at_cycle_end = 1: the subscription stays 'active' (so the tier stays) until the period ends.
-    sub = await _razorpay("POST", f"/subscriptions/{sid}/cancel", json={"cancel_at_cycle_end": 1})
-    return {"cancel_scheduled": True, "ends_at": sub.get("current_end")}
-
-
-@router.get("/billing/subscription")
-async def subscription(request: Request, user_id: str = Depends(auth.get_current_user_id)):
-    """Whether a Pro user's subscription is set to end, and when (unix seconds), so the UI can say so."""
-    _require_keys()
-    sid = await _paid_subscription_id(request, user_id)
-    sub = await _razorpay("GET", f"/subscriptions/{sid}")
-    return {"cancel_scheduled": bool(sub.get("has_scheduled_changes")), "ends_at": sub.get("current_end")}
-
-
-async def _paid_subscription_id(request: Request, user_id: str) -> str:
-    async with request.app.state.engine.connect() as conn:
-        row = (await conn.execute(
-            text("SELECT plan, razorpay_subscription_id FROM users WHERE id = :uid"), {"uid": user_id}
-        )).one()
-    if row.plan == "free" or not row.razorpay_subscription_id:
-        raise HTTPException(status_code=409, detail="Not on a paid plan")
-    return row.razorpay_subscription_id
-
-
 @router.post("/billing/webhook")
 async def webhook(request: Request):
-    """Called by Razorpay, not by users: no login, but every request must carry a valid signature."""
-    if not settings.razorpay_webhook_secret:
+    """Called by Cashfree, not by users: no login, but every request must carry a valid signature."""
+    secret = settings.cashfree_client_secret
+    if not secret:
         raise HTTPException(status_code=503, detail="Billing is not configured")
     body = await request.body()  # the raw bytes: the signature covers them exactly
-    if not valid_signature(body, request.headers.get("x-razorpay-signature"), settings.razorpay_webhook_secret):
+    h = request.headers
+    if not valid_signature(body, h.get("x-webhook-timestamp"), h.get("x-webhook-signature"), secret):
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    event = await request.json()
-    event_type = event.get("event", "")
-    # Razorpay sends a unique ID per event; fall back to the body's hash if it's ever missing.
-    event_id = request.headers.get("x-razorpay-event-id") or hashlib.sha256(body).hexdigest()
-
-    sub = None
-    replaced = None  # the subscription an upgrade replaces, cancelled after the plan change commits
-    if event_type.startswith("subscription."):
-        sub_id = event["payload"]["subscription"]["entity"]["id"]
-        # Events can arrive out of order (an old 'charged' after 'cancelled'), so fetch the
-        # subscription's current state instead of trusting the snapshot inside the event.
-        sub = await _razorpay("GET", f"/subscriptions/{sub_id}")
+    event = json.loads(body)
+    data = event.get("data") or {}
+    if event.get("type") != "PAYMENT_LINK_EVENT" or data.get("link_status") != "PAID":
+        return {"status": "ignored"}  # partly paid, expired, cancelled, or another product's event
+    notes = data.get("link_notes") or {}
+    user_id, tier, link_id = notes.get("user_id"), notes.get("tier"), data.get("link_id")
+    if not user_id or tier not in ("pro", "ultra") or not link_id:
+        logger.warning("Cashfree paid link %s has no valid user_id/tier notes", link_id)
+        return {"status": "ignored"}
 
     async with request.app.state.engine.begin() as conn:
-        # Idempotency: a redelivered event ID matches the primary key and is skipped. The plan update
-        # commits in the same transaction, so a failure means Razorpay retries both.
+        # Idempotency: a link is paid once, so its ID is the event's key. A redelivery (Cashfree delivers at
+        # least once) or a replayed request matches the primary key and is skipped. The pass is granted in
+        # the same transaction, so a failure means Cashfree retries both.
         new = (await conn.execute(text(
-            "INSERT INTO payment_events (id, type) VALUES (:id, :type) ON CONFLICT (id) DO NOTHING RETURNING id"
-        ), {"id": event_id, "type": event_type})).scalar_one_or_none()
+            "INSERT INTO payment_events (id, type) VALUES (:id, 'link.paid') ON CONFLICT (id) DO NOTHING RETURNING id"
+        ), {"id": link_id})).scalar_one_or_none()
         if new is None:
             return {"status": "duplicate"}
-        if sub is not None:
-            user_id = (sub.get("notes") or {}).get("user_id")
-            if not user_id:
-                logger.warning("Razorpay subscription %s has no user_id note", sub["id"])
-                return {"status": "ignored"}
-            tier = plan_for_subscription(sub["status"], sub.get("plan_id"))
-            if tier != "free":
-                # An active subscription gives the user its tier and becomes their current subscription.
-                previous = (await conn.execute(text(
-                    "SELECT razorpay_subscription_id FROM users WHERE id = :uid FOR UPDATE"
-                ), {"uid": user_id})).scalar_one_or_none()
-                await conn.execute(text(
-                    "UPDATE users SET plan = :tier, subscription_status = :status, razorpay_subscription_id = :sid "
-                    "WHERE id = :uid"
-                ), {"tier": tier, "status": sub["status"], "sid": sub["id"], "uid": user_id})
-                if previous and previous != sub["id"]:
-                    replaced = previous  # an upgrade: the old subscription must stop billing
-            else:
-                # Only the user's current subscription can downgrade them: an old, abandoned one
-                # being cancelled must not take Pro away.
-                await conn.execute(text(
-                    "UPDATE users SET plan = 'free', subscription_status = :status "
-                    "WHERE id = :uid AND razorpay_subscription_id = :sid"
-                ), {"status": sub["status"], "sid": sub["id"], "uid": user_id})
-            logger.info("Razorpay %s: subscription %s is %s for user %s", event_type, sub["id"], sub["status"], user_id)
-    if replaced:
-        # After the plan change is committed. Its own 'cancelled' event is then ignored (it is no longer
-        # the current subscription). If this call fails the user keeps the new tier; the old one has to
-        # be cancelled in the Razorpay dashboard, so say so loudly.
-        try:
-            await _razorpay("POST", f"/subscriptions/{replaced}/cancel", json={"cancel_at_cycle_end": 0})
-        except HTTPException:
-            logger.error("Upgrade for user %s: old subscription %s was NOT cancelled; cancel it in Razorpay", user_id, replaced)
+        # The days are added to whatever is left (GREATEST skips a NULL paid_until). A running Ultra pass
+        # stays Ultra even if this payment was for Pro (an old link paid late), so a payment never lowers
+        # the tier. ponytail: Pro days left at an upgrade become Ultra days; prorate if that costs too much.
+        await conn.execute(text(
+            "UPDATE users SET "
+            "plan = CASE WHEN plan = 'ultra' AND paid_until > now() THEN 'ultra' ELSE :tier END, "
+            "paid_until = GREATEST(paid_until, now()) + make_interval(days => :days) "
+            "WHERE id = :uid"
+        ), {"tier": tier, "days": settings.pass_days, "uid": user_id})
+    logger.info("Cashfree link %s paid: %s pass for user %s", link_id, tier, user_id)
     return {"status": "ok"}

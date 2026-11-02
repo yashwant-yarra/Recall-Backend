@@ -76,17 +76,17 @@ class Settings(BaseSettings):
     ultra_daily_live_seconds: int = 60 * 60
     max_live_session_seconds: int = 10 * 60  # keep below the Cloud Run request timeout
     live_web_search: bool = True  # give the voice tutor Google Search (prompt keeps it on the documents' subject)
-    # Razorpay billing. Unset keys = billing switched off (the billing endpoints return 503).
-    razorpay_key_id: str | None = None  # rzp_test_... (identifies the account; not secret)
-    razorpay_key_secret: str | None = None  # Secret Manager in production
-    razorpay_webhook_secret: str | None = None  # chosen when creating the webhook; Secret Manager
-    # Two monthly Razorpay plans, one per paid tier. The original plan (the one existing subscribers pay for)
-    # is the Pro plan; Ultra is sold through a newer, higher-priced plan. Unset = that tier cannot be bought
-    # yet (503). Both are plain env vars, not secrets.
-    razorpay_plan_id: str | None = None  # RAZORPAY_PLAN_ID: plan_... of the monthly Ultra plan
-    razorpay_pro_plan_id: str | None = None  # RAZORPAY_PRO_PLAN_ID: plan_... of the monthly Pro plan
-    razorpay_total_count: int = 12  # billing cycles per subscription (Razorpay requires a number)
-    razorpay_api_url: str = "https://api.razorpay.com/v1"
+    # Cashfree billing: Pro and Ultra are prepaid passes bought through payment links. Unset keys = billing
+    # switched off (the billing endpoints return 503).
+    cashfree_client_id: str | None = None  # identifies the account; not secret
+    cashfree_client_secret: str | None = None  # Secret Manager in production; also signs the webhooks
+    # Where Cashfree sends the paid event: https://<api>/api/v1/billing/webhook. Required to sell.
+    cashfree_notify_url: str | None = None
+    cashfree_api_url: str = "https://api.cashfree.com/pg"  # sandbox: https://sandbox.cashfree.com/pg
+    cashfree_api_version: str = "2025-01-01"
+    pro_price_inr: int = 699  # keep in step with PRICES in the UI's src/lib/legal.ts
+    ultra_price_inr: int = 1999
+    pass_days: int = 30  # one purchase adds this many days
     # Browser origins allowed to call the API (exact scheme + host + port, no trailing slash).
     # Env var as a plain comma-separated list, no JSON quotes to get mangled by a shell:
     # CORS_ORIGINS=http://localhost:3000,https://recall.vercel.app

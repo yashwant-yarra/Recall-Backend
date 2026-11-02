@@ -6,7 +6,7 @@ A GenAI knowledge backend with three connected features over one shared index:
 2. **Voice notes:** upload a recording; it's transcribed, summarized into action items and topics, and indexed next to your documents.
 3. **Agent:** give it a goal; a hand-written function-calling loop looks things up with tools, and asks for your approval before it creates a task or saves a draft.
 
-A **Pro subscription** (Razorpay) raises each user's weekly limits.
+**Pro and Ultra passes** (Cashfree payment links, 30 days each) raise each user's weekly limits.
 
 **Status:** all of it works end to end on Cloud Run, behind Firebase Auth. Backend only; there's no frontend.
 
@@ -54,8 +54,8 @@ Every `/api/v1` route needs `Authorization: Bearer <Firebase ID token>`; every q
 | `POST` | `/api/v1/agent/runs` | `{goal}` → SSE: `run`, `step`…, then `answer`, `approval_needed` or `error`. |
 | `POST` | `/api/v1/agent/runs/{id}/approve` | `{approve: true\|false}` → runs or rejects the pending write, then streams the rest of the run. 404 if nothing is pending. |
 | `GET` | `/api/v1/agent/runs` | The user's 20 most recent runs. |
-| `POST` | `/api/v1/billing/checkout` | Creates a Razorpay subscription for Pro → `{subscription_id, url}` (Razorpay-hosted payment page). |
-| `POST` | `/api/v1/billing/webhook` | Called by Razorpay, not users: no login, but the HMAC signature must match. |
+| `POST` | `/api/v1/billing/checkout` | `{tier, phone}` → creates a Cashfree payment link for a 30-day pass → `{link_id, url}` (Cashfree-hosted payment page). |
+| `POST` | `/api/v1/billing/webhook` | Called by Cashfree, not users: no login, but the HMAC signature must match. |
 
 Weekly limits per user (resetting Monday 00:00 UTC, all configurable; setting names keep their `DAILY_` prefix): Free 6 uploads, 30 questions, 4 quizzes, no agent runs; Pro 30 uploads, 200 questions, 10 quizzes, 10 agent runs; Ultra 80 uploads, 600 questions, 30 quizzes, 40 agent runs. Over the limit → 429.
 
@@ -88,11 +88,11 @@ Weekly limits per user (resetting Monday 00:00 UTC, all configurable; setting na
 - **Identity never passes through the model.** Tools get `user_id` from the server, never from the model's arguments, so injected text in a document can't make the agent read another user's data. Someone else's file looks like "No such file".
 - **Errors the model can fix are results, not crashes.** A bad date or unknown file returns `{"error": …}` and the model corrects itself; system failures fail the run.
 
-**Billing (Razorpay)**
-- **The webhook is the only thing that changes a plan.** The payment page's redirect proves nothing (anyone can open a success URL); a request signed with the webhook secret does. The signature is HMAC-SHA256 over the raw body, compared in constant time.
-- **At-least-once, out of order.** Each event ID is recorded in `payment_events` in the same transaction as the plan change, so a redelivery is skipped. Events can arrive out of order, so the handler fetches the subscription's current state instead of trusting the event's snapshot.
-- **Only the current subscription can downgrade.** A user's abandoned, unpaid link being cancelled can't take Pro away from the subscription they did pay for.
-- **No SDK.** Two REST calls with `httpx` (async) and a stdlib `hmac` check. Stripe was built first and swapped out (it's invite-only in India); only `billing.py` and config changed, because "who is Pro" lives in `users.plan`.
+**Billing (Cashfree payment links)**
+- **The webhook is the only thing that changes a plan.** The payment page's redirect proves nothing (anyone can open a success URL); a request signed with the client secret does. The signature is base64 HMAC-SHA256 over the timestamp header plus the raw body, compared in constant time.
+- **Prepaid passes, nothing renews.** A paid link adds 30 days to `users.paid_until`; the tier counts while that is in the future (one SQL expression, `db.TIER`). No cancel, no renewal state, no out-of-order subscription events. Buying again extends the pass.
+- **At-least-once, replay-safe.** A link is paid once, so its ID goes into `payment_events` in the same transaction as the grant; a redelivered or replayed event is skipped. A payment never lowers a running tier.
+- **No SDK.** One REST call with `httpx` (async) and a stdlib `hmac` check. Stripe was built first and swapped out (invite-only in India), then Razorpay subscriptions, then Cashfree passes; only `billing.py` and config changed, because "who is Pro" lives in `users.plan`.
 
 **Security and operations**
 - **Firebase Auth.** The API verifies ID tokens with `google-auth` (signature, expiry, issuer, audience = this project) and creates the `users` row on first sight. No token → 401; production has no development bypass.
@@ -103,7 +103,7 @@ Weekly limits per user (resetting Monday 00:00 UTC, all configurable; setting na
 
 ## Stack
 
-Python 3.14 · FastAPI · SQLAlchemy 2 async + psycopg 3 · Neon Postgres + pgvector · Google Cloud Storage · Eventarc · Cloud Run · Vertex AI (`google-genai`: Gemini 3.5, Gemini Transcribe, gemini-embedding-001) · Firebase Auth · Razorpay · Alembic · uv
+Python 3.14 · FastAPI · SQLAlchemy 2 async + psycopg 3 · Neon Postgres + pgvector · Google Cloud Storage · Eventarc · Cloud Run · Vertex AI (`google-genai`: Gemini 3.5, Gemini Transcribe, gemini-embedding-001) · Firebase Auth · Cashfree · Alembic · uv
 
 ## Run locally
 
@@ -137,7 +137,7 @@ Both services run on Cloud Run in `asia-southeast1`, next to the Neon database, 
 
 The worker image is older because none of the later commits (billing, limits) changed worker code; the API is redeployed alone in that case.
 
-**Configuration.** Plain settings are env vars (`GCS_BUCKET`, `GOOGLE_CLOUD_PROJECT`, `RAZORPAY_KEY_ID`, `RAZORPAY_PLAN_ID`, any limit overrides like `DAILY_QUESTIONS`). Secrets come from Secret Manager, one grant per secret: `DATABASE_URL`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`. Nothing secret is in the image or the repo.
+**Configuration.** Plain settings are env vars (`GCS_BUCKET`, `GOOGLE_CLOUD_PROJECT`, `CASHFREE_CLIENT_ID`, `CASHFREE_NOTIFY_URL`, any limit overrides like `DAILY_QUESTIONS`). Secrets come from Secret Manager, one grant per secret: `DATABASE_URL`, `CASHFREE_CLIENT_SECRET` (it also signs the webhooks). Nothing secret is in the image or the repo.
 
 **Deploying a change**
 
@@ -196,7 +196,7 @@ The PDF-only run on 2026-10-31 gave the same retrieval (16/20, 18/20) and 19/20 
 3. ~~Voice notes~~: Gemini transcription, structured summary + action items, transcripts in the shared index
 4. ~~Agent~~: hand-written function-calling loop, approval for write tools, daily quota
 5. ~~Backend polish~~: Firebase Auth, daily limits, cleanup command, config validation
-6. ~~Billing~~: Razorpay Pro subscription, signed idempotent webhooks, plan-aware limits
+6. ~~Billing~~: Cashfree prepaid passes (Razorpay subscriptions before), signed idempotent webhooks, plan-aware limits
 
 The browser frontend (Next.js) lives in a separate repo, `Recall-UI`.
 

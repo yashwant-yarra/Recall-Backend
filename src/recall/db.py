@@ -9,10 +9,11 @@ from .config import settings
 # so they agree on when a week starts regardless of the server's or the session's time zone.
 UTC_WEEK_START = "date_trunc('week', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
 
-# SQL for a user's tier: 'free', 'pro' or 'ultra'. A paid plan wins; otherwise a running free trial
-# counts as 'pro' (the middle tier); otherwise free. Written against the users table or an alias of it,
-# so a column prefix can be added with .replace if needed. The one definition of what a user gets.
-TIER = "(CASE WHEN plan <> 'free' THEN plan WHEN trial_ends_at > now() THEN 'pro' ELSE 'free' END)"
+# SQL for a user's tier: 'free', 'pro' or 'ultra'. A paid pass wins while paid_until is in the future;
+# otherwise a running free trial counts as 'pro' (the middle tier); otherwise free. Written against the
+# users table or an alias of it. The one definition of what a user gets (paid_plan below mirrors it).
+TIER = ("(CASE WHEN plan <> 'free' AND paid_until > now() THEN plan "
+        "WHEN trial_ends_at > now() THEN 'pro' ELSE 'free' END)")
 
 # SQL for a user's weekly limit: the :ultra, :pro or :free value for their tier.
 # Every query that uses it binds :uid, :free, :pro and :ultra.
@@ -49,6 +50,11 @@ async def tier_of(engine: AsyncEngine, user_id: str) -> str:
 async def is_pro(engine: AsyncEngine, user_id: str) -> bool:
     """Paid-tier access: Pro or Ultra, or a running free trial. The gate for Talk, Agent and web search."""
     return await tier_of(engine, user_id) != "free"
+
+
+def paid_plan(plan: str, paid_until: datetime | None, now: datetime) -> str:
+    """The tier a user has paid for and still has: their plan while the pass lasts, otherwise free."""
+    return plan if plan != "free" and paid_until is not None and paid_until > now else "free"
 
 
 def trial_state(plan: str, trial_ends_at: datetime | None, now: datetime) -> dict:

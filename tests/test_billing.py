@@ -1,6 +1,8 @@
+import base64
 import hashlib
 import hmac
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -8,74 +10,106 @@ from fastapi.testclient import TestClient
 
 from recall import auth, billing
 from recall.config import settings
+from recall.db import paid_plan
 
-SECRET = "test_webhook_secret"
+SECRET = "test_client_secret"
+TS = "1730000000"
 
 
-def signed(body: str, secret: str = SECRET) -> str:
-    """An X-Razorpay-Signature header, built the way Razorpay builds it."""
-    return hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+def signed(body: str, ts: str = TS, secret: str = SECRET) -> str:
+    """An x-webhook-signature header, built the way Cashfree builds it: base64(HMAC-SHA256(secret, ts + body))."""
+    return base64.b64encode(hmac.new(secret.encode(), (ts + body).encode(), hashlib.sha256).digest()).decode()
+
+
+def headers(body: str, **kw) -> dict:
+    return {"x-webhook-timestamp": kw.get("ts", TS), "x-webhook-signature": signed(body, **kw)}
 
 
 @pytest.fixture
 def client(monkeypatch):
-    # Only the billing router, no lifespan: these tests never reach the database or Razorpay.
-    monkeypatch.setattr(settings, "razorpay_webhook_secret", SECRET)
+    # Only the billing router, no lifespan: these tests never reach the database or Cashfree.
+    monkeypatch.setattr(settings, "cashfree_client_secret", SECRET)
     app = FastAPI()
     app.include_router(billing.router)
     app.dependency_overrides[auth.get_current_user_id] = lambda: "test-user"
     return TestClient(app)
 
 
-def test_plan_for_subscription(monkeypatch):
-    monkeypatch.setattr(settings, "razorpay_pro_plan_id", "plan_pro")
-    monkeypatch.setattr(settings, "razorpay_plan_id", "plan_ultra")
-    assert billing.plan_for_subscription("active", "plan_pro") == "pro"
-    assert billing.plan_for_subscription("active", "plan_ultra") == "ultra"
-    assert billing.plan_for_subscription("active", "plan_unknown") == "pro"  # never the higher tier by accident
-    assert billing.plan_for_subscription("active", None) == "pro"
-    for status in ("created", "authenticated", "pending", "halted", "cancelled", "completed", "expired", None):
-        assert billing.plan_for_subscription(status, "plan_ultra") == "free"
-
-
-def test_ultra_plan_unset_means_nothing_is_ultra(monkeypatch):
-    monkeypatch.setattr(settings, "razorpay_plan_id", None)
-    assert billing.tier_for_plan_id(None) == "pro"  # an unset id never matches by accident
-    assert billing.plan_id_for("ultra") is None
-
-
 def test_valid_signature():
-    body = b'{"event": "subscription.activated"}'
-    assert billing.valid_signature(body, signed(body.decode()), SECRET)
-    assert not billing.valid_signature(body, signed(body.decode(), "other_secret"), SECRET)
-    assert not billing.valid_signature(body, None, SECRET)
-    assert not billing.valid_signature(body, "", SECRET)
+    body = b'{"type": "PAYMENT_LINK_EVENT"}'
+    assert billing.valid_signature(body, TS, signed(body.decode()), SECRET)
+    assert not billing.valid_signature(body, TS, signed(body.decode(), secret="other"), SECRET)
+    assert not billing.valid_signature(body, "1730000001", signed(body.decode()), SECRET)  # timestamp is signed too
+    assert not billing.valid_signature(body, None, signed(body.decode()), SECRET)
+    assert not billing.valid_signature(body, TS, None, SECRET)
+    assert not billing.valid_signature(body, TS, "", SECRET)
+
+
+def test_paid_plan_counts_only_until_paid_until():
+    now = datetime.now(timezone.utc)
+    assert paid_plan("pro", now + timedelta(days=1), now) == "pro"
+    assert paid_plan("ultra", now + timedelta(days=1), now) == "ultra"
+    assert paid_plan("pro", now - timedelta(seconds=1), now) == "free"  # the pass ran out
+    assert paid_plan("pro", None, now) == "free"
+    assert paid_plan("free", now + timedelta(days=1), now) == "free"
+
+
+def test_price_for(monkeypatch):
+    monkeypatch.setattr(settings, "pro_price_inr", 699)
+    monkeypatch.setattr(settings, "ultra_price_inr", 1999)
+    assert billing.price_for("pro") == 699
+    assert billing.price_for("ultra") == 1999
 
 
 def test_webhook_without_signature_rejected(client):
-    assert client.post("/billing/webhook", content='{"event": "x"}').status_code == 400
+    assert client.post("/billing/webhook", content='{"type": "x"}').status_code == 400
 
 
 def test_webhook_wrong_secret_rejected(client):
-    body = json.dumps({"event": "subscription.activated"})
-    r = client.post("/billing/webhook", content=body, headers={"X-Razorpay-Signature": signed(body, "other_secret")})
-    assert r.status_code == 400
+    body = json.dumps({"type": "PAYMENT_LINK_EVENT"})
+    assert client.post("/billing/webhook", content=body, headers=headers(body, secret="other")).status_code == 400
 
 
 def test_webhook_tampered_body_rejected(client):
     # Signed for one body, sent with another: someone edited the event in transit.
-    original = json.dumps({"event": "subscription.cancelled"})
-    forged = original.replace("cancelled", "activated")
-    r = client.post("/billing/webhook", content=forged, headers={"X-Razorpay-Signature": signed(original)})
-    assert r.status_code == 400
+    original = json.dumps({"type": "PAYMENT_LINK_EVENT", "data": {"link_status": "EXPIRED"}})
+    forged = original.replace("EXPIRED", "PAID")
+    assert client.post("/billing/webhook", content=forged, headers=headers(original)).status_code == 400
+
+
+def test_webhook_ignores_unpaid_links_without_touching_the_database(client):
+    # The test app has no engine: reaching the database would crash, so 200 proves it stopped early.
+    for status in ("ACTIVE", "PARTIALLY_PAID", "EXPIRED", "CANCELLED"):
+        body = json.dumps({"type": "PAYMENT_LINK_EVENT", "data": {"link_id": "l1", "link_status": status}})
+        r = client.post("/billing/webhook", content=body, headers=headers(body))
+        assert r.status_code == 200 and r.json()["status"] == "ignored"
+    other = json.dumps({"type": "PAYMENT_SUCCESS_WEBHOOK", "data": {}})
+    assert client.post("/billing/webhook", content=other, headers=headers(other)).json()["status"] == "ignored"
+
+
+def test_webhook_ignores_paid_link_without_valid_notes(client):
+    for notes in ({}, {"user_id": "u1"}, {"user_id": "u1", "tier": "gold"}, {"tier": "pro"}):
+        body = json.dumps({"type": "PAYMENT_LINK_EVENT",
+                           "data": {"link_id": "l1", "link_status": "PAID", "link_notes": notes}})
+        assert client.post("/billing/webhook", content=body, headers=headers(body)).json()["status"] == "ignored"
+
+
+def test_checkout_validates_phone(client, monkeypatch):
+    monkeypatch.setattr(settings, "cashfree_client_id", "id")
+    for phone in ("12345", "5123456789", "98765432101", "+919876543210", ""):
+        assert client.post("/billing/checkout", json={"tier": "pro", "phone": phone}).status_code == 422
+    assert client.post("/billing/checkout", json={"tier": "pro"}).status_code == 422
 
 
 def test_billing_off_without_keys(client, monkeypatch):
-    monkeypatch.setattr(settings, "razorpay_webhook_secret", None)
-    monkeypatch.setattr(settings, "razorpay_key_id", None)
-    monkeypatch.setattr(settings, "razorpay_key_secret", None)
+    monkeypatch.setattr(settings, "cashfree_client_id", None)
+    monkeypatch.setattr(settings, "cashfree_client_secret", None)
     assert client.post("/billing/webhook", content="{}").status_code == 503
-    assert client.post("/billing/checkout", json={"tier": "pro"}).status_code == 503
-    assert client.post("/billing/checkout", json={"tier": "gold"}).status_code == 422  # only pro or ultra
-    assert client.post("/billing/cancel").status_code == 503
-    assert client.get("/billing/subscription").status_code == 503
+    assert client.post("/billing/checkout", json={"tier": "pro", "phone": "9876543210"}).status_code == 503
+    assert client.post("/billing/checkout", json={"tier": "gold", "phone": "9876543210"}).status_code == 422
+
+
+def test_cancel_and_subscription_are_gone(client):
+    # Passes don't renew, so there is nothing to cancel or look up.
+    assert client.post("/billing/cancel").status_code == 404
+    assert client.get("/billing/subscription").status_code == 404

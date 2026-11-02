@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 
 from .config import settings
 from recall.abuse import trial_refusal
-from recall.db import make_engine, trial_state
+from recall.db import make_engine, paid_plan, trial_state
 from . import auth, files, search, ask, agent_api, billing, quiz, speech, live, tasks_api
 from google import genai
 
@@ -97,10 +97,14 @@ def plan_limits() -> list[dict]:
 async def read_current_user(request: Request, who: dict = Depends(auth.identity_from_request)):
     user_id = who["user_id"]
     async with request.app.state.engine.connect() as conn:
-        row = (await conn.execute(text("SELECT plan, trial_ends_at FROM users WHERE id = :uid"), {"uid": user_id})).one()
-    trial = trial_state(row.plan, row.trial_ends_at, datetime.now(timezone.utc))
+        row = (await conn.execute(text(
+            "SELECT plan, trial_ends_at, paid_until FROM users WHERE id = :uid"), {"uid": user_id})).one()
+    now = datetime.now(timezone.utc)
+    # The trial uses the stored plan, like POST /billing/trial: anyone who ever paid has no trial to start.
+    trial = trial_state(row.plan, row.trial_ends_at, now)
     # blocked: why a trial that is still available cannot start yet (unverified or throwaway email), in words.
     trial["blocked"] = trial_refusal(who["email"], who["email_verified"]) if trial["available"] else None
-    # plan is what the user pays for; trial says whether Pro access is running without payment.
-    return {"user_id": user_id, "plan": row.plan, "email_verified": who["email_verified"], "trial": trial,
-            "limits": plan_limits()}
+    # plan is the pass the user has right now (free once it runs out); paid_until is when it ends.
+    plan = paid_plan(row.plan, row.paid_until, now)
+    return {"user_id": user_id, "plan": plan, "paid_until": row.paid_until.isoformat() if plan != "free" else None,
+            "email_verified": who["email_verified"], "trial": trial, "limits": plan_limits()}
