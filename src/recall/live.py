@@ -26,7 +26,7 @@ from sqlalchemy import text
 from recall.ask import Language, language_instruction, source_label
 from recall.auth import user_from_token
 from recall.config import settings
-from recall.db import PLAN_LIMIT, UTC_DAY_START, is_pro, tier_params
+from recall.db import PLAN_LIMIT, UTC_WEEK_START, is_pro, tier_params
 from recall.search import hybrid_search
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ def system_prompt(doc_name: str | None, language: str | None, web: bool = True) 
 
 
 def allowed_seconds(used: int, limit: int, max_session: int) -> int:
-    """How long a new session may run: what's left of today's allowance, at most one session's cap."""
+    """How long a new session may run: what's left of this week's allowance, at most one session's cap."""
     return max(0, min(limit - used, max_session))
 
 
@@ -90,7 +90,7 @@ async def _reserve(engine, user_id: str) -> tuple[int, int | None]:
         row = (await conn.execute(text(
             f"SELECT {PLAN_LIMIT} AS lim, "
             f"COALESCE((SELECT sum(seconds) FROM usage_events WHERE user_id = :uid AND kind = 'live' "
-            f"AND created_at >= {UTC_DAY_START}), 0) AS used FROM users u WHERE u.id = :uid FOR UPDATE"
+            f"AND created_at >= {UTC_WEEK_START}), 0) AS used FROM users u WHERE u.id = :uid FOR UPDATE"
         ), {"uid": user_id, **tier_params(settings.daily_live_seconds, settings.pro_daily_live_seconds,
                                           settings.ultra_daily_live_seconds)})).one()
         allowed = allowed_seconds(int(row.used), row.lim, settings.max_live_session_seconds)
@@ -141,7 +141,7 @@ async def live(ws: WebSocket):
 
     allowed, usage_id = await _reserve(engine, user_id)
     if not usage_id:
-        return await fail("You've used today's live voice minutes for your plan")
+        return await fail("You've used this week's live voice minutes for your plan")
     started = time.monotonic()
 
     config = types.LiveConnectConfig(

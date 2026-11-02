@@ -79,15 +79,16 @@ def plan_limits() -> list[dict]:
         return {"key": key, "label": label, "free": free, "pro": pro, "ultra": ultra}
 
     return [
-        row("questions", "Questions per day", s.daily_questions, s.pro_daily_questions, s.ultra_daily_questions),
-        row("uploads", "Uploads per day", s.daily_uploads, s.pro_daily_uploads, s.ultra_daily_uploads),
-        row("quizzes", "Quizzes per day", s.daily_quizzes, s.pro_daily_quizzes, s.ultra_daily_quizzes),
-        row("voice_inputs", "Spoken questions per day", s.daily_voice_inputs, s.pro_daily_voice_inputs, s.ultra_daily_voice_inputs),
-        row("read_aloud", "Read-aloud requests per day", s.daily_tts_requests, s.pro_daily_tts_requests, s.ultra_daily_tts_requests),
-        row("live_minutes", "Talk minutes per day", s.daily_live_seconds // 60, s.pro_daily_live_seconds // 60, s.ultra_daily_live_seconds // 60),
-        row("agent_runs", "Agent runs per day", s.agent_daily_runs, s.pro_agent_daily_runs, s.ultra_agent_daily_runs),
-        row("web_searches", "Web search answers per day", s.daily_web_searches, s.pro_daily_web_searches, s.ultra_daily_web_searches),
+        row("questions", "Questions per week", s.daily_questions, s.pro_daily_questions, s.ultra_daily_questions),
+        row("uploads", "Uploads per week", s.daily_uploads, s.pro_daily_uploads, s.ultra_daily_uploads),
+        row("quizzes", "Quizzes per week", s.daily_quizzes, s.pro_daily_quizzes, s.ultra_daily_quizzes),
+        row("voice_inputs", "Spoken questions per week", s.daily_voice_inputs, s.pro_daily_voice_inputs, s.ultra_daily_voice_inputs),
+        row("read_aloud", "Read-aloud requests per week", s.daily_tts_requests, s.pro_daily_tts_requests, s.ultra_daily_tts_requests),
+        row("live_minutes", "Talk minutes per week", s.daily_live_seconds // 60, s.pro_daily_live_seconds // 60, s.ultra_daily_live_seconds // 60),
+        row("agent_runs", "Agent runs per week", s.agent_daily_runs, s.pro_agent_daily_runs, s.ultra_agent_daily_runs),
+        row("web_searches", "Web search answers per week", s.daily_web_searches, s.pro_daily_web_searches, s.ultra_daily_web_searches),
         row("max_files", "Files kept at once", s.free_max_files, s.pro_max_files, None),
+        row("max_storage_mb", "Total storage (MB)", s.free_max_storage // mb, s.pro_max_storage // mb, s.ultra_max_storage // mb),
         row("max_file_mb", "Largest file (MB)", s.free_max_upload_size // mb, s.pro_max_upload_size // mb, s.max_upload_size // mb),
     ]
 

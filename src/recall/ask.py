@@ -137,18 +137,18 @@ async def ask(body: AskRequest, request: Request, user_id: str = Depends(auth.ge
     engine = request.app.state.engine
     if body.web_search and body.mode == "explain":  # Pro only; refused before anything is saved
         await require_pro(engine, user_id, "Web search")
-    # Each question is a Gemini call, so cap them per user per UTC day. Counted in usage_events (db.spend),
+    # Each question is a Gemini call, so cap them per user per UTC week. Counted in usage_events (db.spend),
     # so deleting chats or clearing data does not reset the limit. Checked before the stream starts, so the
     # client gets a real 429.
     if not await spend(engine, user_id, "question", settings.daily_questions, settings.pro_daily_questions,
                        settings.ultra_daily_questions):
-        raise HTTPException(status_code=429, detail="Daily question limit reached for your plan")
+        raise HTTPException(status_code=429, detail="Weekly question limit reached for your plan")
     if body.web_search and body.mode == "explain":
-        # Grounded answers cost extra, so they have their own daily count (asked for, whether or not
+        # Grounded answers cost extra, so they have their own weekly count (asked for, whether or not
         # the model ends up searching).
         if not await spend(engine, user_id, "web", settings.daily_web_searches, settings.pro_daily_web_searches,
                            settings.ultra_daily_web_searches):
-            raise HTTPException(status_code=429, detail="Daily web search limit reached for your plan. Turn off web search to keep asking.")
+            raise HTTPException(status_code=429, detail="Weekly web search limit reached for your plan. Turn off web search to keep asking.")
     async with engine.begin() as conn:
         history = []
         if body.chat_id is None:

@@ -59,6 +59,10 @@ class CreateFileResponse(BaseModel):
 
 router = APIRouter()
 
+
+def _size_label(n: int) -> str:
+    return f"{n // 1024**3} GB" if n >= 1024**3 else f"{n // 1024**2} MB"
+
 @router.post("/files", status_code=201) 
 async def create_file(body: CreateFileRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)) -> CreateFileResponse:
     """Creates a new file record and returns a signed upload URL."""
@@ -66,10 +70,10 @@ async def create_file(body: CreateFileRequest, request: Request, user_id: str = 
         raise HTTPException(status_code=400, detail=f"Unsupported mime type: {body.mime_type}")
     kind, ext = ALLOWED_TYPES[body.mime_type]
     tier = await tier_of(request.app.state.engine, user_id)
-    max_size, max_files, upgrade = {
-        "free": (settings.free_max_upload_size, settings.free_max_files, "Pro"),
-        "pro": (settings.pro_max_upload_size, settings.pro_max_files, "Ultra"),
-        "ultra": (settings.max_upload_size, None, None),  # no file-count cap
+    max_size, max_files, max_storage, upgrade = {
+        "free": (settings.free_max_upload_size, settings.free_max_files, settings.free_max_storage, "Pro"),
+        "pro": (settings.pro_max_upload_size, settings.pro_max_files, settings.pro_max_storage, "Ultra"),
+        "ultra": (settings.max_upload_size, None, settings.ultra_max_storage, None),  # no file-count cap
     }[tier]
     hint = f" Upgrade to {upgrade} for more." if upgrade else ""
     if body.size_bytes > max_size:
@@ -80,14 +84,19 @@ async def create_file(body: CreateFileRequest, request: Request, user_id: str = 
         # ponytail: count-then-insert, so two simultaneous uploads at the cap can both pass by one.
         if kept >= max_files:
             raise HTTPException(status_code=403, detail=f"The {tier.capitalize()} plan keeps up to {max_files} files. Delete one or upgrade.{'' if not upgrade else ' ' + upgrade + ' keeps more.'}")
+    async with request.app.state.engine.connect() as conn:
+        stored = (await conn.execute(text("SELECT COALESCE(sum(size_bytes), 0) FROM files WHERE user_id = :uid"), {"uid": user_id})).scalar_one()
+    # ponytail: sum-then-insert like the file count above, so two simultaneous uploads at the cap can both pass.
+    if stored + body.size_bytes > max_storage:
+        raise HTTPException(status_code=403, detail=f"The {tier.capitalize()} plan stores up to {_size_label(max_storage)}. Delete a file or upgrade.{'' if not upgrade else ' ' + upgrade + ' stores more.'}")
     file_id = uuid4()
     folder = "audio" if kind == "audio" else "docs"
     gcs_path = f"users/{user_id}/{folder}/{file_id}.{ext}"
-    # Today's upload limit is counted in usage_events (db.spend), so deleting files or clearing data does
+    # This week's upload limit is counted in usage_events (db.spend), so deleting files or clearing data does
     # not give the uploads back. Spent after the size and file-count checks, so a refused upload uses none.
     if not await spend(request.app.state.engine, user_id, "upload", settings.daily_uploads, settings.pro_daily_uploads,
                        settings.ultra_daily_uploads):
-        raise HTTPException(status_code=429, detail="Daily upload limit reached for your plan")
+        raise HTTPException(status_code=429, detail="Weekly upload limit reached for your plan")
     async with request.app.state.engine.begin() as conn:
         await conn.execute(
             text("INSERT INTO files (id, user_id, kind, gcs_path, mime_type, size_bytes, display_name) "

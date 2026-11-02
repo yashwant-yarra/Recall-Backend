@@ -6,7 +6,7 @@ A GenAI knowledge backend with three connected features over one shared index:
 2. **Voice notes:** upload a recording; it's transcribed, summarized into action items and topics, and indexed next to your documents.
 3. **Agent:** give it a goal; a hand-written function-calling loop looks things up with tools, and asks for your approval before it creates a task or saves a draft.
 
-A **Pro subscription** (Razorpay) raises each user's daily limits.
+A **Pro subscription** (Razorpay) raises each user's weekly limits.
 
 **Status:** all of it works end to end on Cloud Run, behind Firebase Auth. Backend only; there's no frontend.
 
@@ -57,7 +57,7 @@ Every `/api/v1` route needs `Authorization: Bearer <Firebase ID token>`; every q
 | `POST` | `/api/v1/billing/checkout` | Creates a Razorpay subscription for Pro → `{subscription_id, url}` (Razorpay-hosted payment page). |
 | `POST` | `/api/v1/billing/webhook` | Called by Razorpay, not users: no login, but the HMAC signature must match. |
 
-Daily limits per user (UTC day, all configurable): free 10 uploads, 40 questions, 5 quizzes, 15 agent runs; Pro 50 uploads, 500 questions, 30 quizzes, 50 agent runs. Over the limit → 429.
+Weekly limits per user (resetting Monday 00:00 UTC, all configurable; setting names keep their `DAILY_` prefix): Free 6 uploads, 30 questions, 4 quizzes, no agent runs; Pro 30 uploads, 200 questions, 10 quizzes, 10 agent runs; Ultra 80 uploads, 600 questions, 30 quizzes, 40 agent runs. Over the limit → 429.
 
 ## Design decisions
 

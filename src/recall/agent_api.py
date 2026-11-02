@@ -36,7 +36,7 @@ async def start_run(body: RunRequest, request: Request, user_id: str = Depends(a
     await require_pro(request.app.state.engine, user_id, "The Agent")
     run_id = await create_run(request.app.state.engine, user_id, body.goal)
     if run_id is None:
-        raise HTTPException(status_code=429, detail="Daily agent run limit reached for your plan")
+        raise HTTPException(status_code=429, detail="Weekly agent run limit reached for your plan")
 
     async def events():
         yield {"type": "run", "run_id": str(run_id)}
@@ -97,7 +97,7 @@ async def get_run(run_id: UUID, request: Request, user_id: str = Depends(auth.ge
 @router.delete("/agent/runs/{run_id}", status_code=204)
 async def delete_run(run_id: UUID, request: Request, user_id: str = Depends(auth.get_current_user_id)):
     async with request.app.state.engine.begin() as conn:
-        # Keep a content-free row for the daily run quota; an empty goal cannot be created via the API.
+        # Keep a content-free row for the weekly run quota; an empty goal cannot be created via the API.
         deleted = (await conn.execute(text(
             "UPDATE agent_runs SET goal = '', answer = NULL, error = NULL "
             "WHERE id = :id AND user_id = :uid AND goal <> '' "

@@ -5,16 +5,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from .config import settings
 
-# SQL for the start of the current UTC day, as a timestamptz. All daily limits use it, so they agree
-# on when a day starts regardless of the server's or the session's time zone.
-UTC_DAY_START = "date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
+# SQL for the start of the current UTC week (Monday 00:00 UTC), as a timestamptz. All usage limits use it,
+# so they agree on when a week starts regardless of the server's or the session's time zone.
+UTC_WEEK_START = "date_trunc('week', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
 
 # SQL for a user's tier: 'free', 'pro' or 'ultra'. A paid plan wins; otherwise a running free trial
 # counts as 'pro' (the middle tier); otherwise free. Written against the users table or an alias of it,
 # so a column prefix can be added with .replace if needed. The one definition of what a user gets.
 TIER = "(CASE WHEN plan <> 'free' THEN plan WHEN trial_ends_at > now() THEN 'pro' ELSE 'free' END)"
 
-# SQL for a user's daily limit: the :ultra, :pro or :free value for their tier.
+# SQL for a user's weekly limit: the :ultra, :pro or :free value for their tier.
 # Every query that uses it binds :uid, :free, :pro and :ultra.
 PLAN_LIMIT = f"(CASE COALESCE((SELECT {TIER} FROM users WHERE id = :uid), 'free') WHEN 'ultra' THEN :ultra WHEN 'pro' THEN :pro ELSE :free END)"
 
@@ -25,7 +25,7 @@ def tier_params(free, pro, ultra) -> dict:
 
 
 async def spend(engine: AsyncEngine, user_id: str, kind: str, free: int, pro: int, ultra: int) -> bool:
-    """Record one use of `kind` today, unless the user's tier is at its daily limit (False).
+    """Record one use of `kind` this week, unless the user's tier is at its weekly limit (False).
 
     Uses are counted in usage_events, a ledger that nothing else deletes. They used to be counted from the
     stored files, messages, runs and quizzes, so 'Clear all data' or deleting a file reset the limit.
@@ -33,7 +33,7 @@ async def spend(engine: AsyncEngine, user_id: str, kind: str, free: int, pro: in
     async with engine.begin() as conn:
         recorded = (await conn.execute(text(
             "INSERT INTO usage_events (user_id, kind) SELECT :uid, :kind WHERE ("
-            f"  SELECT count(*) FROM usage_events WHERE user_id = :uid AND kind = :kind AND created_at >= {UTC_DAY_START}"
+            f"  SELECT count(*) FROM usage_events WHERE user_id = :uid AND kind = :kind AND created_at >= {UTC_WEEK_START}"
             f") < {PLAN_LIMIT} RETURNING id"
         ), {"uid": user_id, "kind": kind, **tier_params(free, pro, ultra)})).scalar_one_or_none()
     return recorded is not None

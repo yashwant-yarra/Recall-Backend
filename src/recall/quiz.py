@@ -109,7 +109,7 @@ async def create_quiz(body: CreateQuiz, request: Request, user_id: str = Depends
     # Spent before generating, after the file checks above, so a bad request does not use one up.
     if not await spend(request.app.state.engine, user_id, "quiz", settings.daily_quizzes, settings.pro_daily_quizzes,
                        settings.ultra_daily_quizzes):
-        raise HTTPException(status_code=429, detail="Daily quiz limit reached for your plan")
+        raise HTTPException(status_code=429, detail="Weekly quiz limit reached for your plan")
 
     passages = await _context(request, user_id, body.file_id, body.topic)
     if not passages:

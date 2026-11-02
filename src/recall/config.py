@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     # Files kept at once (new uploads only; nothing already stored is deleted). Ultra has no cap.
     free_max_files: int = 5
     pro_max_files: int = 50
+    # Total stored per user, all files together (new uploads only; nothing already stored is deleted).
+    free_max_storage: int = 50 * 1024 * 1024
+    pro_max_storage: int = 1024 * 1024 * 1024
+    ultra_max_storage: int = 5 * 1024 * 1024 * 1024
     upload_url_ttl_seconds: int = 15 * 60  # 15 minutes
     download_url_ttl_seconds: int = 5 * 60  # preview links: short-lived, re-requested on each open
     google_cloud_project: str
@@ -33,30 +37,30 @@ class Settings(BaseSettings):
     # Three tiers: Free, Pro (middle) and Ultra (the former Pro numbers). Names without a prefix are Free,
     # pro_* is Pro and ultra_* is Ultra. Agent, web search and live Talk are for paid tiers: their free
     # value is 0, and the routes also refuse Free users with a clear message (db.require_pro).
-    agent_daily_runs: int = 0  # runs per user per UTC day
-    daily_uploads: int = 3  # POST /files per user per UTC day
-    daily_questions: int = 15  # POST /ask per user per UTC day (each one is a Gemini call)
-    pro_daily_uploads: int = 15
-    pro_daily_questions: int = 150
-    pro_agent_daily_runs: int = 15
-    ultra_daily_uploads: int = 50
-    ultra_daily_questions: int = 500
-    ultra_agent_daily_runs: int = 50
-    daily_web_searches: int = 0  # answers that used Google Search grounding per user per UTC day (billed extra)
-    pro_daily_web_searches: int = 30
-    ultra_daily_web_searches: int = 100
-    daily_quizzes: int = 2  # generated quizzes per user per UTC day (grading is part of the quiz)
+    agent_daily_runs: int = 0  # runs per user per UTC week
+    daily_uploads: int = 6  # POST /files per user per UTC week
+    daily_questions: int = 30  # POST /ask per user per UTC week (each one is a Gemini call)
+    pro_daily_uploads: int = 30
+    pro_daily_questions: int = 200
+    pro_agent_daily_runs: int = 10
+    ultra_daily_uploads: int = 80
+    ultra_daily_questions: int = 600
+    ultra_agent_daily_runs: int = 40
+    daily_web_searches: int = 0  # answers that used Google Search grounding per user per UTC week (billed extra)
+    pro_daily_web_searches: int = 20
+    ultra_daily_web_searches: int = 80
+    daily_quizzes: int = 4  # generated quizzes per user per UTC week (grading is part of the quiz)
     pro_daily_quizzes: int = 10
     ultra_daily_quizzes: int = 30
     quiz_model: str = "gemini-3.5-flash"  # writing good questions and grading answers needs the larger model
     ocr_model: str = "gemini-3.5-flash"  # reads scanned PDF pages when they have no text layer
     # Voice: questions spoken into the mic, and answers read aloud (counted per request).
-    daily_voice_inputs: int = 10
+    daily_voice_inputs: int = 20
     pro_daily_voice_inputs: int = 100
     ultra_daily_voice_inputs: int = 300
-    daily_tts_requests: int = 50  # one request per piece of an answer (~a sentence or two)
-    pro_daily_tts_requests: int = 500
-    ultra_daily_tts_requests: int = 1500
+    daily_tts_requests: int = 100  # one request per piece of an answer (~a sentence or two)
+    pro_daily_tts_requests: int = 400
+    ultra_daily_tts_requests: int = 1200
     tts_model: str = "gemini-2.5-flash-tts"
     tts_voice: str = "Kore"
     max_voice_input_bytes: int = 2 * 1024 * 1024  # ~2 minutes of compressed speech

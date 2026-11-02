@@ -51,7 +51,7 @@ def build_contents(goal: str, steps: list[dict]) -> list[types.Content]:
 
 
 async def create_run(engine, user_id: str, goal: str) -> UUID | None:
-    """Insert a run, unless the user hit their tier's daily run limit (UTC day). None = over quota.
+    """Insert a run, unless the user hit their tier's weekly run limit (UTC week). None = over quota.
 
     The use is counted in usage_events (db.spend), so deleting runs or clearing data does not reset it.
     """
@@ -210,7 +210,7 @@ async def main(user_id: str, goal: str) -> None:
     app = SimpleNamespace(state=SimpleNamespace(engine=make_engine(), genai=make_genai_client()))
     run_id = await create_run(app.state.engine, user_id, goal)
     if run_id is None:
-        print("Daily agent run limit reached for this plan")
+        print("Weekly agent run limit reached for this plan")
         return
     print("run", run_id)
     while True:

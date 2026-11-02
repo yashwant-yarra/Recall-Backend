@@ -46,9 +46,9 @@ def sample_rate(mime_type: str | None, default: int = 24000) -> int:
 
 
 async def meter(request: Request, user_id: str, kind: str, free: int, pro: int, ultra: int) -> None:
-    """Record one use, unless today's limit for the user's plan is reached (429)."""
+    """Record one use, unless this week's limit for the user's plan is reached (429)."""
     if not await spend(request.app.state.engine, user_id, kind, free, pro, ultra):
-        raise HTTPException(status_code=429, detail="Daily voice limit reached for your plan")
+        raise HTTPException(status_code=429, detail="Weekly voice limit reached for your plan")
 
 
 @router.post("/speech/transcribe")

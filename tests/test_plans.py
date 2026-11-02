@@ -24,8 +24,8 @@ class FakeEngine:
     """Answers the tier lookup ('free', 'pro' or 'ultra') and the file count; anything else (an insert)
     means a cap did not stop the request."""
 
-    def __init__(self, tier, kept=0):
-        self.tier, self.kept, self.counted = tier, kept, False
+    def __init__(self, tier, kept=0, stored=0):
+        self.tier, self.kept, self.stored, self.counted = tier, kept, stored, False
 
     def connect(self):
         engine = self
@@ -41,6 +41,8 @@ class FakeEngine:
                 sql = str(statement)
                 if "FROM users" in sql:
                     return FakeResult(engine.tier)
+                if "sum(size_bytes)" in sql:
+                    return FakeResult(engine.stored)  # bytes already stored by this user
                 if "count(*)" in sql and "INSERT" not in sql:
                     engine.counted = True  # the stored-file count, not the daily-limit count inside the insert
                     return FakeResult(engine.kept)
@@ -64,11 +66,11 @@ def test_every_limit_steps_up_from_free_to_pro_to_ultra():
     assert len({r["key"] for r in plan_limits()}) == len(plan_limits())
 
 
-def test_ultra_keeps_the_limits_pro_used_to_have():
+def test_ultra_limits_are_pinned():
     rows = {r["key"]: r for r in plan_limits()}
-    # Ultra is the former Pro numbers, so these must not drift.
-    assert (rows["questions"]["ultra"], rows["uploads"]["ultra"], rows["agent_runs"]["ultra"]) == (500, 50, 50)
-    assert (rows["live_minutes"]["ultra"], rows["web_searches"]["ultra"], rows["max_file_mb"]["ultra"]) == (60, 100, 25)
+    # Weekly limits (changed 2026-11-02 for cost control), so a config edit can't silently drift them.
+    assert (rows["questions"]["ultra"], rows["uploads"]["ultra"], rows["agent_runs"]["ultra"]) == (600, 80, 40)
+    assert (rows["live_minutes"]["ultra"], rows["web_searches"]["ultra"], rows["max_file_mb"]["ultra"]) == (60, 80, 25)
 
 
 def test_tier_params_binds_all_three():
@@ -110,6 +112,20 @@ def test_file_count_caps_by_tier():
     assert free.status_code == 403 and "Pro keeps more" in free.json()["detail"]
     pro = post_file(upload_client(FakeEngine("pro", kept=settings.pro_max_files)), 1000)
     assert pro.status_code == 403 and "Ultra keeps more" in pro.json()["detail"]
+
+
+def test_total_storage_caps_by_tier():
+    free = post_file(upload_client(FakeEngine("free", stored=settings.free_max_storage - 500)), 1000)
+    assert free.status_code == 403 and "stores up to 50 MB" in free.json()["detail"] and "Pro stores more" in free.json()["detail"]
+    pro = post_file(upload_client(FakeEngine("pro", stored=settings.pro_max_storage)), 1)
+    assert pro.status_code == 403 and "stores up to 1 GB" in pro.json()["detail"]
+    ultra = post_file(upload_client(FakeEngine("ultra", stored=settings.ultra_max_storage)), 1)
+    assert ultra.status_code == 403 and "stores up to 5 GB" in ultra.json()["detail"] and "upgrade." in ultra.json()["detail"]
+
+
+def test_upload_under_the_storage_cap_passes_the_check():
+    r = post_file(upload_client(FakeEngine("free", stored=settings.free_max_storage - 1000)), 1000)
+    assert r.status_code != 403  # exactly at the cap is allowed; it goes on to the usage count (not set up here)
 
 
 def test_ultra_has_no_file_count_check():
