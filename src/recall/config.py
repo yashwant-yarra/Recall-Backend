@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     max_upload_size: int = 25 * 1024 * 1024  # 25 MB (Ultra, and the absolute ceiling)
     free_max_upload_size: int = 5 * 1024 * 1024  # Free: 5 MB per file
     pro_max_upload_size: int = 15 * 1024 * 1024  # Pro: 15 MB per file
+    # Accounts allowed in without a verified email, comma-separated: the test account given to Razorpay's
+    # reviewers. Everyone else must verify their email to use the API (set VERIFICATION_EXEMPT_EMAILS to change).
+    verification_exempt_emails: str = "test@genai.dev"
     trial_days: int = 7  # one free trial per account, opt-in, no card; it gives Pro (the middle tier)
     # Files kept at once (new uploads only; nothing already stored is deleted). Ultra has no cap.
     free_max_files: int = 5

@@ -6,6 +6,8 @@ second address); they remove the zero-effort cases. Card-on-file, phone or devic
 and add friction, so they are left until abuse is actually seen.
 """
 
+from .config import settings
+
 # A short list of well-known disposable-mail services. ponytail: not exhaustive and never will be; swap in a
 # maintained list (e.g. the open-source "disposable-email-domains" package) if this needs to be thorough.
 DISPOSABLE_DOMAINS = frozenset({
@@ -26,6 +28,14 @@ def is_disposable(email: str | None) -> bool:
         return False
     domain = email.rsplit("@", 1)[1].strip().lower()
     return any(domain == d or domain.endswith("." + d) for d in DISPOSABLE_DOMAINS)
+
+
+def is_verification_exempt(email: str | None) -> bool:
+    """True for an account allowed in without a verified email (settings.verification_exempt_emails)."""
+    if not email:
+        return False
+    exempt = {e.strip().lower() for e in settings.verification_exempt_emails.split(",") if e.strip()}
+    return email.strip().lower() in exempt
 
 
 def trial_refusal(email: str | None, email_verified: bool) -> str | None:

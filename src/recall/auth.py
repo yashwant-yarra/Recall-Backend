@@ -8,6 +8,7 @@ from google.oauth2 import id_token
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from .abuse import is_verification_exempt
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -50,9 +51,11 @@ async def get_current_user_id(request: Request) -> str:
     return await user_from_token(bearer_token(request.headers.get("authorization")), request.app.state.engine)
 
 
-async def user_from_token(token: str | None, engine) -> str:
-    """The user ID for a Firebase ID token, or HTTPException 401/409/503. Shared by HTTP routes
-    (token from the Authorization header) and the live WebSocket (token from its first message)."""
+async def user_from_token(token: str | None, engine, require_verified: bool = True) -> str:
+    """The user ID for a Firebase ID token, or HTTPException 401/403/409/503. Shared by HTTP routes
+    (token from the Authorization header) and the live WebSocket (token from its first message).
+    Unverified emails get 403 unless require_verified is False (only /me, which the UI needs to ask them
+    to verify) or the account is on the exempt list."""
     if token is None:
         # Local development only. DEV_USER_ID is never set on Cloud Run, so production requires a
         # token and fails closed.
@@ -71,6 +74,8 @@ async def user_from_token(token: str | None, engine) -> str:
     user_id, email = claims["sub"], claims.get("email")
     if not email:
         raise HTTPException(status_code=401, detail="Account has no email")
+    if require_verified and not claims.get("email_verified") and not is_verification_exempt(email):
+        raise HTTPException(status_code=403, detail="Verify your email address to use Recall.")
     # ponytail: per-process memory; each new instance re-checks a user once, which is harmless.
     if user_id not in _known_users:
         await _ensure_user(engine, user_id, email)
@@ -84,8 +89,10 @@ async def identity_from_request(request: Request) -> dict:
     its claims; with no token (local development only) the dev user counts as verified.
     ponytail: the token is verified twice (once here, once for the user); cache the claims if it matters."""
     token = bearer_token(request.headers.get("authorization"))
-    user_id = await user_from_token(token, request.app.state.engine)
+    user_id = await user_from_token(token, request.app.state.engine, require_verified=False)
     if token is None:
         return {"user_id": user_id, "email": None, "email_verified": True}
     claims = await asyncio.to_thread(verify_token, token)
-    return {"user_id": user_id, "email": claims.get("email"), "email_verified": bool(claims.get("email_verified"))}
+    email = claims.get("email")
+    verified = bool(claims.get("email_verified")) or is_verification_exempt(email)
+    return {"user_id": user_id, "email": email, "email_verified": verified}
