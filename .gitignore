@@ -5,3 +5,10 @@ CLAUDE.md
 Recordings/
 .idea/
 .vscode/
+
+# AI tooling
+.impeccable/
+.claude/
+AGENTS.md
+DESIGN.md
+PRODUCT.md
