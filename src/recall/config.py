@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     cashfree_return_url: str | None = None
     cashfree_api_url: str = "https://api.cashfree.com/pg"  # sandbox: https://sandbox.cashfree.com/pg
     cashfree_api_version: str = "2025-01-01"
+    razorpay_key_id: str | None = None
+    razorpay_key_secret: str | None = None
+    razorpay_webhook_secret: str | None = None
     pro_price_inr: int = 699  # keep in step with PRICES in the UI's src/lib/legal.ts
     ultra_price_inr: int = 1999
     pass_days: int = 30  # one purchase adds this many days

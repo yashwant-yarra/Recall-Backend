@@ -53,6 +53,7 @@ def pass_from_order(order: dict) -> tuple[str, str] | None:
 
 class CheckoutRequest(BaseModel):
     tier: Literal["pro", "ultra"]
+    provider: Literal["cashfree", "razorpay"] = "cashfree"
     # Cashfree requires a customer phone on every order: a 10-digit Indian mobile number, digits only.
     phone: str = Field(pattern=r"^[6-9]\d{9}$")
 
@@ -83,17 +84,42 @@ async def _cashfree(method: str, path: str, json: dict | None = None) -> dict:
     return resp.json()
 
 
+async def _razorpay(method: str, path: str, json: dict | None = None) -> dict:
+    if not (settings.razorpay_key_id and settings.razorpay_key_secret and settings.razorpay_webhook_secret):
+        raise HTTPException(status_code=503, detail="Razorpay is not configured")
+    async with httpx.AsyncClient(base_url="https://api.razorpay.com/v1", auth=(settings.razorpay_key_id, settings.razorpay_key_secret), timeout=15) as client:
+        resp = await client.request(method, path, json=json)
+    if resp.status_code >= 400:
+        logger.error("Razorpay %s %s failed: %s", method, path, resp.status_code)
+        raise HTTPException(status_code=502, detail="Payment provider error")
+    return resp.json()
+
+
 @router.post("/billing/checkout")
 async def checkout(body: CheckoutRequest, request: Request, user_id: str = Depends(auth.get_current_user_id)):
     """Buy a pass. Buying your current tier extends it; Pro can move up to Ultra. Pro can't be bought while
     an Ultra pass is running (it would only waste the money: the webhook keeps Ultra)."""
-    _require_keys()
+    if body.provider == "cashfree":
+        _require_keys()
+    elif not (settings.razorpay_key_id and settings.razorpay_key_secret and settings.razorpay_webhook_secret):
+        raise HTTPException(status_code=503, detail="Razorpay is not configured")
     async with request.app.state.engine.connect() as conn:
         row = (await conn.execute(text(
             "SELECT plan, paid_until, paid_until > now() AS active FROM users WHERE id = :uid"), {"uid": user_id})).one()
     if row.active and row.plan == "ultra" and body.tier == "pro":
         ends = row.paid_until.date().isoformat()
         raise HTTPException(status_code=409, detail=f"You have Ultra until {ends}. Pro can be bought after that.")
+
+    if body.provider == "razorpay":
+        amount = price_for(body.tier) * 100
+        link = await _razorpay("POST", "/payment_links", json={
+            "amount": amount, "currency": "INR", "accept_partial": False,
+            "description": f"Recall {body.tier.capitalize()}, {settings.pass_days} days",
+            "customer": {"contact": "+91" + body.phone},
+            "notify": {"sms": False, "email": False},
+            "notes": {"user_id": user_id, "tier": body.tier, "amount": str(amount), "product": "recall_pass"},
+        })
+        return {"payment_url": link["short_url"]}
 
     # user_id and tier go in the order's tags, set by this server. The webhook reads them back from
     # Cashfree's copy of the order, so they can be trusted to say who paid and for what. The order ID is
@@ -136,6 +162,32 @@ async def start_trial(request: Request, who: dict = Depends(auth.identity_from_r
     return {"ends_at": ends_at.isoformat()}
 
 
+@router.post("/billing/razorpay/webhook")
+async def razorpay_webhook(request: Request):
+    secret = settings.razorpay_webhook_secret
+    if not secret:
+        raise HTTPException(status_code=503, detail="Razorpay is not configured")
+    body = await request.body()
+    signature = request.headers.get("x-razorpay-signature", "")
+    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    event = json.loads(body)
+    entity = ((event.get("payload") or {}).get("payment_link") or {}).get("entity") or {}
+    link_id = entity.get("id", "")
+    if event.get("event") != "payment_link.paid" or not isinstance(link_id, str) or not link_id.startswith("plink_") or not link_id[6:].isalnum():
+        return {"status": "ignored"}
+    link = await _razorpay("GET", f"/payment_links/{link_id}")
+    notes = link.get("notes") or {}
+    user_id, tier = notes.get("user_id"), notes.get("tier")
+    if (link.get("status") != "paid" or link.get("currency") != "INR" or notes.get("product") != "recall_pass"
+            or not user_id or tier not in ("pro", "ultra") or str(link.get("amount")) != notes.get("amount")
+            or link.get("amount_paid") != link.get("amount")):
+        logger.warning("Razorpay link %s is not a paid Recall pass", link_id)
+        return {"status": "ignored"}
+    return await grant_pass(request, "razorpay:" + link_id, user_id, tier)
+
+
 @router.post("/billing/webhook")
 async def webhook(request: Request):
     """Called by Cashfree, not by users: no login, but every request must carry a valid signature."""
@@ -161,7 +213,10 @@ async def webhook(request: Request):
         logger.warning("Cashfree order %s is not paid or has no valid user_id/tier tags", order_id)
         return {"status": "ignored"}
     user_id, tier = paid
+    return await grant_pass(request, order_id, user_id, tier)
 
+
+async def grant_pass(request: Request, order_id: str, user_id: str, tier: str):
     async with request.app.state.engine.begin() as conn:
         # Idempotency: an order is paid once, so its ID is the event's key. A redelivery (Cashfree delivers
         # at least once) or a replayed request matches the primary key and is skipped. The pass is granted in
@@ -180,5 +235,5 @@ async def webhook(request: Request):
             "paid_until = GREATEST(paid_until, now()) + make_interval(days => :days) "
             "WHERE id = :uid"
         ), {"tier": tier, "days": settings.pass_days, "uid": user_id})
-    logger.info("Cashfree order %s paid: %s pass for user %s", order_id, tier, user_id)
+    logger.info("Payment %s paid: %s pass for user %s", order_id, tier, user_id)
     return {"status": "ok"}
