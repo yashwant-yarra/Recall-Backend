@@ -123,16 +123,16 @@ def test_cancel_and_subscription_are_gone(client):
     assert client.get("/billing/subscription").status_code == 404
 
 
-def test_razorpay_webhook_checks_signature_and_paid_link(client, monkeypatch):
+def test_razorpay_webhook_checks_signature_and_paid_order(client, monkeypatch):
     monkeypatch.setattr(settings, "razorpay_webhook_secret", SECRET)
-    event = json.dumps({"event": "payment_link.paid", "payload": {"payment_link": {"entity": {"id": "plink_ABC123"}}}})
+    event = json.dumps({"event": "order.paid", "payload": {"order": {"entity": {"id": "order_ABC123"}}}})
     signature = hmac.new(SECRET.encode(), event.encode(), hashlib.sha256).hexdigest()
     link = {"status": "paid", "currency": "INR", "amount": 69900, "amount_paid": 69900,
             "notes": {"user_id": "u1", "tier": "pro", "amount": "69900", "product": "recall_pass"}}
     granted = []
 
     async def fetch(method, path, json=None):
-        assert (method, path) == ("GET", "/payment_links/plink_ABC123")
+        assert (method, path) == ("GET", "/orders/order_ABC123")
         return link
 
     async def grant(request, order_id, user_id, tier):
@@ -144,10 +144,23 @@ def test_razorpay_webhook_checks_signature_and_paid_link(client, monkeypatch):
     assert client.post("/billing/razorpay/webhook", content=event).status_code == 400
     assert client.post("/billing/razorpay/webhook", content=event + " ", headers={"x-razorpay-signature": signature}).status_code == 400
     assert client.post("/billing/razorpay/webhook", content=event, headers={"x-razorpay-signature": signature}).json() == {"status": "ok"}
-    assert granted == [("razorpay:plink_ABC123", "u1", "pro")]
+    assert granted == [("razorpay:order_ABC123", "u1", "pro")]
     link["amount_paid"] = 100
     assert client.post("/billing/razorpay/webhook", content=event, headers={"x-razorpay-signature": signature}).json() == {"status": "ignored"}
     assert len(granted) == 1
+
+
+def test_razorpay_webhook_ignores_other_events_and_odd_ids(client, monkeypatch):
+    monkeypatch.setattr(settings, "razorpay_webhook_secret", SECRET)
+
+    async def fetch(*args, **kwargs):
+        raise AssertionError("must not call Razorpay")
+
+    monkeypatch.setattr(billing, "_razorpay", fetch)
+    for name, order_id in (("payment.captured", "order_ABC123"), ("order.paid", "order_../x"), ("order.paid", "plink_ABC123")):
+        event = json.dumps({"event": name, "payload": {"order": {"entity": {"id": order_id}}}})
+        signature = hmac.new(SECRET.encode(), event.encode(), hashlib.sha256).hexdigest()
+        assert client.post("/billing/razorpay/webhook", content=event, headers={"x-razorpay-signature": signature}).json() == {"status": "ignored"}
 
 
 def test_razorpay_disabled_without_configuration(client, monkeypatch):
@@ -157,7 +170,7 @@ def test_razorpay_disabled_without_configuration(client, monkeypatch):
     assert client.post("/billing/razorpay/webhook", content="{}").status_code == 503
 
 
-def test_razorpay_checkout_creates_pass_link(client, monkeypatch):
+def test_razorpay_checkout_creates_pass_order(client, monkeypatch):
     from types import SimpleNamespace
 
     for name in ("razorpay_key_id", "razorpay_key_secret", "razorpay_webhook_secret"):
@@ -176,11 +189,13 @@ def test_razorpay_checkout_creates_pass_link(client, monkeypatch):
     client.app.state.engine = SimpleNamespace(connect=Connection)
 
     async def create(method, path, json=None):
-        assert (method, path) == ("POST", "/payment_links")
-        assert json["amount"] == settings.pro_price_inr * 100
+        assert (method, path) == ("POST", "/orders")
+        assert json["amount"] == settings.pro_price_inr * 100 and json["currency"] == "INR"
+        assert len(json["receipt"]) <= 40  # Razorpay's limit
         assert json["notes"]["user_id"] == "test-user" and json["notes"]["tier"] == "pro"
-        return {"short_url": "https://rzp.io/test"}
+        return {"id": "order_TEST1"}
 
     monkeypatch.setattr(billing, "_razorpay", create)
     response = client.post("/billing/checkout", json={"tier": "pro", "phone": "9876543210", "provider": "razorpay"})
-    assert response.status_code == 200 and response.json() == {"payment_url": "https://rzp.io/test"}
+    assert response.status_code == 200
+    assert response.json() == {"order_id": "order_TEST1", "key_id": "test", "amount": settings.pro_price_inr * 100, "currency": "INR"}

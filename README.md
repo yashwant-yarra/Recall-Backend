@@ -56,7 +56,7 @@ Every `/api/v1` route needs `Authorization: Bearer <Firebase ID token>`; every q
 | `GET` | `/api/v1/agent/runs` | The user's 20 most recent runs. |
 | `POST` | `/api/v1/billing/checkout` | `{tier, phone}` → creates a Cashfree order for a 30-day pass → `{order_id, payment_session_id, mode}`; the UI opens Cashfree checkout as a popup on the page. |
 | `POST` | `/api/v1/billing/webhook` | Called by Cashfree, not users: no login, but the HMAC signature must match. |
-| `POST` | `/api/v1/billing/razorpay/webhook` | Called by Razorpay for `payment_link.paid`; the signed link is fetched and granted once. |
+| `POST` | `/api/v1/billing/razorpay/webhook` | Called by Razorpay for `order.paid`; the signed order is fetched back from Razorpay and granted once. |
 
 Weekly limits per user (resetting Monday 00:00 UTC, all configurable; setting names keep their `DAILY_` prefix): Free 6 uploads, 30 questions, 4 quizzes, no agent runs; Pro 30 uploads, 200 questions, 10 quizzes, 10 agent runs; Ultra 80 uploads, 600 questions, 30 quizzes, 40 agent runs. Over the limit → 429.
 
@@ -142,7 +142,7 @@ The worker image is older because none of the later commits (billing, limits) ch
 
 **Configuration.** Plain settings are env vars (`GCS_BUCKET`, `GOOGLE_CLOUD_PROJECT`, `CASHFREE_CLIENT_ID`, `CASHFREE_NOTIFY_URL`, any limit overrides like `DAILY_QUESTIONS`). Secrets come from Secret Manager, one grant per secret: `DATABASE_URL`, `CASHFREE_CLIENT_SECRET` (it also signs the webhooks). Nothing secret is in the image or the repo.
 
-For Razorpay Payment Links, set `RAZORPAY_KEY_ID` and provide `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` through Cloud Run's Secret Manager references. Configure a Razorpay webhook for `payment_link.paid` at `https://<api>/api/v1/billing/razorpay/webhook` using the same webhook secret. Enable the UI option with `NEXT_PUBLIC_RAZORPAY_ENABLED=true` as well as the existing payments flag. Use matching Razorpay test or live credentials and webhook configuration; test the complete payment flow before enabling it for customers.
+For Razorpay (orders paid in Razorpay's Checkout window over the Account page, like Cashfree's popup), set `RAZORPAY_KEY_ID` and provide `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET` through Cloud Run's Secret Manager references. Payments must be captured automatically (Razorpay dashboard, payment capture settings), since `order.paid` fires only for captured payments. Configure a Razorpay webhook for `order.paid` at `https://<api>/api/v1/billing/razorpay/webhook` using the same webhook secret. Enable the UI option with `NEXT_PUBLIC_RAZORPAY_ENABLED=true` as well as the existing payments flag. Use matching Razorpay test or live credentials and webhook configuration; test the complete payment flow before enabling it for customers.
 
 **Deploying a change**
 

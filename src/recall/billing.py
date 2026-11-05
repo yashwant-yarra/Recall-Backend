@@ -1,4 +1,4 @@
-"""Cashfree billing: Pro and Ultra are prepaid passes, bought through Cashfree orders.
+"""Billing: Pro and Ultra are prepaid passes, bought through Cashfree orders or Razorpay orders.
 
 Flow: POST /billing/checkout {tier, phone} creates a Cashfree order for that tier's price and returns its
 payment_session_id; the UI opens Cashfree's checkout as a popup over the page with it (card and UPI
@@ -9,6 +9,10 @@ again to extend. The free trial (POST /billing/trial) needs no payment and lives
 
 No Cashfree SDK on the server: two calls (create and fetch an order), made with httpx (async), and the
 webhook signature is a plain HMAC-SHA256, checked with the standard library.
+
+Razorpay works the same way (provider "razorpay"): checkout creates a Razorpay order, the UI opens
+Razorpay's Checkout window over the page with it, and POST /billing/razorpay/webhook grants the pass on
+order.paid after fetching the order back from Razorpay.
 """
 import base64
 import hashlib
@@ -111,15 +115,16 @@ async def checkout(body: CheckoutRequest, request: Request, user_id: str = Depen
         raise HTTPException(status_code=409, detail=f"You have Ultra until {ends}. Pro can be bought after that.")
 
     if body.provider == "razorpay":
-        amount = price_for(body.tier) * 100
-        link = await _razorpay("POST", "/payment_links", json={
-            "amount": amount, "currency": "INR", "accept_partial": False,
-            "description": f"Recall {body.tier.capitalize()}, {settings.pass_days} days",
-            "customer": {"contact": "+91" + body.phone},
-            "notify": {"sms": False, "email": False},
+        # A Razorpay order, paid in Razorpay's Checkout window over the page (like Cashfree's popup).
+        # user_id and tier go in the order's notes, set by this server; the webhook reads them back from
+        # Razorpay's copy of the order. The phone only prefills the checkout form, in the UI.
+        amount = price_for(body.tier) * 100  # paise
+        order = await _razorpay("POST", "/orders", json={
+            "amount": amount, "currency": "INR", "receipt": f"recall_{uuid.uuid4().hex[:24]}",
             "notes": {"user_id": user_id, "tier": body.tier, "amount": str(amount), "product": "recall_pass"},
         })
-        return {"payment_url": link["short_url"]}
+        # The key ID is public (Checkout needs it in the browser); the key secret never leaves this server.
+        return {"order_id": order["id"], "key_id": settings.razorpay_key_id, "amount": amount, "currency": "INR"}
 
     # user_id and tier go in the order's tags, set by this server. The webhook reads them back from
     # Cashfree's copy of the order, so they can be trusted to say who paid and for what. The order ID is
@@ -173,19 +178,22 @@ async def razorpay_webhook(request: Request):
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(status_code=400, detail="Invalid signature")
     event = json.loads(body)
-    entity = ((event.get("payload") or {}).get("payment_link") or {}).get("entity") or {}
-    link_id = entity.get("id", "")
-    if event.get("event") != "payment_link.paid" or not isinstance(link_id, str) or not link_id.startswith("plink_") or not link_id[6:].isalnum():
+    entity = ((event.get("payload") or {}).get("order") or {}).get("entity") or {}
+    order_id = entity.get("id", "")
+    # The ID goes into a URL path below, so only Razorpay's own shape (order_ + letters and digits) passes.
+    if event.get("event") != "order.paid" or not isinstance(order_id, str) or not order_id.startswith("order_") or not order_id[6:].isalnum():
         return {"status": "ignored"}
-    link = await _razorpay("GET", f"/payment_links/{link_id}")
-    notes = link.get("notes") or {}
+    # Fetch the order instead of trusting the event's copy: Razorpay's status and amounts are the proof,
+    # and user_id and tier come from the notes this server set at checkout.
+    order = await _razorpay("GET", f"/orders/{order_id}")
+    notes = order.get("notes") or {}
     user_id, tier = notes.get("user_id"), notes.get("tier")
-    if (link.get("status") != "paid" or link.get("currency") != "INR" or notes.get("product") != "recall_pass"
-            or not user_id or tier not in ("pro", "ultra") or str(link.get("amount")) != notes.get("amount")
-            or link.get("amount_paid") != link.get("amount")):
-        logger.warning("Razorpay link %s is not a paid Recall pass", link_id)
+    if (order.get("status") != "paid" or order.get("currency") != "INR" or notes.get("product") != "recall_pass"
+            or not user_id or tier not in ("pro", "ultra") or str(order.get("amount")) != notes.get("amount")
+            or order.get("amount_paid") != order.get("amount")):
+        logger.warning("Razorpay order %s is not a paid Recall pass", order_id)
         return {"status": "ignored"}
-    return await grant_pass(request, "razorpay:" + link_id, user_id, tier)
+    return await grant_pass(request, "razorpay:" + order_id, user_id, tier)
 
 
 @router.post("/billing/webhook")
