@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     daily_quizzes: int = 4  # generated quizzes per user per UTC week (grading is part of the quiz)
     pro_daily_quizzes: int = 10
     ultra_daily_quizzes: int = 30
-    quiz_model: str = "gemini-3.5-flash"  # writing good questions and grading answers needs the larger model
-    ocr_model: str = "gemini-3.5-flash"  # reads scanned PDF pages when they have no text layer
+    quiz_model: str = "gemini-3.5-flash-lite"  # shortcut: quiz quality not compared with Flash yet, upgrade if grading is wrong
+    ocr_model: str = "gemini-3.5-flash-lite"  # reads scanned PDF pages with no text layer; not compared with Flash yet
     # Voice: questions spoken into the mic, and answers read aloud (counted per request).
     daily_voice_inputs: int = 20
     pro_daily_voice_inputs: int = 100
